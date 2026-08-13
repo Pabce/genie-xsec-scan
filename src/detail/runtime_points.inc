@@ -216,16 +216,19 @@ std::vector<Point> make_points(const Options &opt)
   if (!opt.points_path.empty() && !opt.scans.empty()) {
     throw std::runtime_error("Use either --points or --scan, not both");
   }
-  if (!opt.points_path.empty()) return read_points_csv(opt.points_path, opt.fixed);
-
   std::vector<Point> points;
-  add_scan_points_recursive(opt.scans, 0, opt.fixed, points);
-  if (points.empty()) {
-    Point p;
-    p.row_id = 0;
-    p.values = opt.fixed;
-    points.push_back(std::move(p));
+  if (!opt.points_path.empty()) {
+    points = read_points_csv(opt.points_path, opt.fixed);
+  } else {
+    add_scan_points_recursive(opt.scans, 0, opt.fixed, points);
+    if (points.empty()) {
+      Point p;
+      p.row_id = 0;
+      p.values = opt.fixed;
+      points.push_back(std::move(p));
+    }
   }
+  for (Point &point : points) point.target = opt.target;
   return points;
 }
 
@@ -259,6 +262,7 @@ std::vector<Point> make_batch_points(const Options &base,
     std::vector<Point> points = make_points(scan_opt);
     for (Point &point : points) {
       point.batch = batch_scan.name;
+      point.target = batch_scan.target.value_or(base.target);
       point.row_id = static_cast<int>(all_points.size());
       all_points.push_back(std::move(point));
     }

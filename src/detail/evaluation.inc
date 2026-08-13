@@ -651,20 +651,23 @@ std::vector<ComponentValue> evaluate_alg_point(const Point &point,
                                                const genie::XSecAlgorithmI &model)
 {
   const double E = get(point.values, Var::E);
-  genie::InitialState init = make_initial_state(opt, E);
+  Options point_opt = opt;
+  point_opt.target = point.target;
+  genie::InitialState init = make_initial_state(point_opt, E);
   std::unique_ptr<genie::InteractionList> list =
-      make_algorithm_interactions(opt, init);
+      make_algorithm_interactions(point_opt, init);
 
   std::set<std::string> seen;
   std::vector<ComponentValue> components;
   for (const genie::Interaction *interaction : *list) {
-    if (opt.interaction_sum == "hit-state") {
+    if (point_opt.interaction_sum == "hit-state") {
       const std::string key = hit_state_key(*interaction);
       if (seen.count(key)) continue;
       seen.insert(key);
     }
     components.push_back(evaluate_component(component_name(*interaction, model),
-                                            model, *interaction, point.values, opt));
+                                            model, *interaction, point.values,
+                                            point_opt));
   }
   return components;
 }

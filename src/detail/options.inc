@@ -61,6 +61,7 @@ struct RangeSpec {
 struct Point {
   int row_id = 0;
   std::string batch;
+  int target = 0;
   std::map<Var, double> values;
 };
 
@@ -149,6 +150,7 @@ struct Options {
 
 struct BatchScan {
   std::string name;
+  std::optional<int> target;
   std::vector<std::string> fixed;
   std::vector<std::string> ranges;
 };
@@ -855,7 +857,7 @@ BatchDocument read_batch_config(const std::string &path)
         if (!scan_names.insert(name).second) {
           throw std::runtime_error(where + " repeats scan name " + name);
         }
-        document.scans.push_back(BatchScan{name, {}, {}});
+        document.scans.push_back(BatchScan{name, std::nullopt, {}, {}});
         scan = &document.scans.back();
         section = Section::Scan;
         continue;
@@ -878,9 +880,22 @@ BatchDocument read_batch_config(const std::string &path)
         scan->fixed.push_back(value);
       } else if (key == "range" || key == "scan") {
         scan->ranges.push_back(value);
+      } else if (key == "target") {
+        std::size_t consumed = 0;
+        long parsed = 0;
+        try {
+          parsed = std::stol(value, &consumed);
+        } catch (const std::exception &) {
+          throw std::runtime_error(where + " has an invalid target PDG");
+        }
+        if (consumed != value.size() || parsed <= 0 ||
+            parsed > std::numeric_limits<int>::max()) {
+          throw std::runtime_error(where + " has an invalid target PDG");
+        }
+        scan->target = static_cast<int>(parsed);
       } else {
         throw std::runtime_error(
-            where + " scan sections accept only fixed or range");
+            where + " scan sections accept only target, fixed, or range");
       }
       continue;
     }

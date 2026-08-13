@@ -65,7 +65,8 @@ quadrature and samples across all energies and angles:
 
 The configuration is dependency-free INI syntax. `[global]` uses CLI option
 names without the leading `--`; boolean flags accept `true` or `false`.
-Repeated `[scan NAME]` sections accept `fixed` and `range` entries:
+Repeated `[scan NAME]` sections accept an optional target PDG plus `fixed` and
+`range` entries:
 
 ```ini
 [global]
@@ -82,6 +83,7 @@ jobs = 1
 output = out/batch/example.csv
 
 [scan E056_th36]
+target = 1000060120
 fixed = E=0.56
 fixed = costheta_l=0.809016994375
 range = Eprime:0.555:0.155:92
@@ -93,16 +95,31 @@ range = Eprime:0.555:0.105:96
 ```
 
 Multiple `range` entries form a Cartesian product, matching repeated `--scan`
-arguments. Global `fixed` entries apply to every scan; scan-local values can
+arguments. A scan-local `target` overrides the global target and causes the
+scanner to resolve/cache the appropriate GENIE context for that target and
+beam energy. Global `fixed` entries apply to every scan; scan-local values can
 override them. CLI options after `--batch-config` override scalar global
 settings, which is useful for `--jobs`, fold resolution, and output paths.
 Full-line comments begin with `#` or `;`.
 
-Batch CSVs add a `batch` column containing the section name. `row_id` remains
-globally increasing across sections, and rows retain configuration-file order.
+Batch CSVs add `batch` and `target` columns containing the section name and
+resolved target PDG. `row_id` remains globally increasing across sections, and
+rows retain configuration-file order.
 The bundled three-panel figure-6 example produces 252 points and 14,112 rows:
 9.43 s with `--jobs 1` and 2.96 s with `--jobs 10` on the benchmark M1 Pro.
 The serial and parallel outputs are identical.
+
+The mixed-target example evaluates identical 0.56 GeV, 60-degree kinematics
+for C12 and Fe56:
+
+```bash
+./out/xsec_scan \
+  --batch-config config/c12_fe56_e056_th60_gem21.batch.ini
+```
+
+It produces 10,752 valid rows in 8.26 s serial or 3.86 s with ten workers on
+the benchmark machine. Each target slice exactly matches its corresponding
+standalone invocation.
 
 At runtime the executable prepends `config` to `GXMLPATH`
 when it can infer the path from its own location. This is harmless for stock

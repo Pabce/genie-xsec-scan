@@ -102,7 +102,7 @@ std::vector<Var> output_vars()
 void write_header(std::ostream &out, const Options &opt)
 {
   out << "row_id,";
-  if (opt.batch_mode) out << "batch,";
+  if (opt.batch_mode) out << "batch,target,";
   out << "component,observable,value,unit,status,message";
   for (Var v : output_vars()) out << "," << canonical_var_name(v);
   out << "\n";
@@ -113,7 +113,9 @@ void write_row(std::ostream &out, const Point &point,
                double unit_factor)
 {
   out << point.row_id << ",";
-  if (opt.batch_mode) out << csv_escape(point.batch) << ",";
+  if (opt.batch_mode) {
+    out << csv_escape(point.batch) << "," << point.target << ",";
+  }
   out << csv_escape(value.component) << ","
       << observable_name(opt.observable) << ","
       << std::setprecision(12) << (value.value / unit_factor) << ","
@@ -205,14 +207,19 @@ int run(int argc, char **argv)
   const genie::XSecAlgorithmI *direct_model = nullptr;
   if (opt.mode == Mode::Alg) direct_model = get_xsec_alg(opt.xsec_alg);
 
-  std::map<double, std::unique_ptr<TuneContext>> tune_contexts;
+  std::map<std::pair<int, double>, std::unique_ptr<TuneContext>> tune_contexts;
   std::vector<const TuneContext *> point_tune_context(points.size(), nullptr);
   if (opt.mode == Mode::Tune) {
     for (std::size_t index = 0; index < points.size(); ++index) {
       const double E = get(points[index].values, Var::E);
-      auto found = tune_contexts.find(E);
+      const std::pair<int, double> key = {points[index].target, E};
+      auto found = tune_contexts.find(key);
       if (found == tune_contexts.end()) {
-        found = tune_contexts.emplace(E, make_tune_context(E, opt)).first;
+        Options context_opt = opt;
+        context_opt.target = points[index].target;
+        found = tune_contexts
+                    .emplace(key, make_tune_context(E, context_opt))
+                    .first;
         prime_tune_context_caches(*found->second, E);
       }
       point_tune_context[index] = found->second.get();
