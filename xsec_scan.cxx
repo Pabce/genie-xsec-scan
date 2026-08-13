@@ -63,6 +63,10 @@
 #include <utility>
 #include <vector>
 
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 namespace {
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -207,6 +211,7 @@ struct Options {
   double shape_norm_auto_threshold = 2.0;
   bool components = false;
   bool strict = false;
+  int jobs = 1;
   std::string message_thresholds = "config/Messenger_whisper.xml";
 };
 
@@ -414,6 +419,7 @@ void print_usage(std::ostream &os)
       << "  --qel-fold-pmax VALUE --qel-fold-kf VALUE --qel-fold-removal-energy VALUE\n"
       << "  --no-qel-fold-scan-cache disable one-pass scan filling for supported QE scans\n"
       << "  --fold auto model-aware event-generator-path folding with phase-space vetoes\n"
+      << "  --jobs N|auto evaluate scan-point chunks in forked workers (default: 1)\n"
       << "  --initial-state-fold RES,MEC,DIS deterministic event-chain initial-state fold\n"
       << "  --initial-state-fold-samples N --initial-state-fold-nr N --initial-state-fold-np N\n"
       << "  --initial-state-fold-event-phase-space apply GENIE event-chain phase-space vetoes\n"
@@ -618,6 +624,14 @@ Options parse_options(int argc, char **argv)
       } else {
         throw std::runtime_error("--fold accepts only auto, manual, or off");
       }
+    } else if (arg == "--jobs") {
+      const std::string value = lower(trim(need_value(arg)));
+      if (value == "auto") {
+        const long detected = sysconf(_SC_NPROCESSORS_ONLN);
+        opt.jobs = detected > 0 ? static_cast<int>(detected) : 1;
+      } else {
+        opt.jobs = std::stoi(value);
+      }
     } else if (arg == "--initial-state-fold") {
       for (std::string process : split(need_value(arg), ',')) {
         process = lower(trim(process));
@@ -810,6 +824,9 @@ Options parse_options(int argc, char **argv)
   if (opt.initial_state_fold_samples <= 0 ||
       opt.initial_state_fold_nr <= 0 || opt.initial_state_fold_np <= 0) {
     throw std::runtime_error("Initial-state fold grid sizes must be positive");
+  }
+  if (opt.jobs <= 0) {
+    throw std::runtime_error("--jobs must be positive or auto");
   }
   if (opt.shape_norm_ne <= 0 || opt.shape_norm_ncosth <= 0) {
     throw std::runtime_error("--shape-norm grid sizes must be positive");
@@ -3408,59 +3425,31 @@ bool apply_folded_kinematics(genie::Interaction *interaction,
 double folded_wq2_jacobian(const genie::Interaction &interaction,
                            const std::map<Var, double> &values,
                            const std::vector<Var> &diff_vars,
-                           double rel_step)
+                           double /* rel_step */)
 {
-  // XSec(W,Q2) is integrated over the outgoing-lepton azimuth in the hit-
-  // nucleon rest frame.  For a moving hit state, the correct lab density needs
-  // the full map (E', cos(theta), phi_lab) -> (W, Q2, phi_hit), not merely the
-  // upper-left 2x2 W,Q2 Jacobian.
-  auto coords = [&](const std::map<Var, double> &point, double phi_lab,
-                    double out[3]) -> bool {
-    genie::Interaction state(interaction);
-    if (!apply_folded_kinematics(&state, point, phi_lab)) return false;
-    out[0] = state.Kine().W();
-    out[1] = state.Kine().Q2();
-    out[2] = scattering_phi_hit_rest(state);
-    return std::isfinite(out[0]) && std::isfinite(out[1]) &&
-           std::isfinite(out[2]);
-  };
-
-  double deriv[3][3] = {{0.0, 0.0, 0.0},
-                        {0.0, 0.0, 0.0},
-                        {0.0, 0.0, 0.0}};
-  for (int j = 0; j < 3; ++j) {
-    auto plus = values;
-    auto minus = values;
-    double phi_plus = 0.0;
-    double phi_minus = 0.0;
-    double h = 1e-5;
-    if (j < 2) {
-      const Var var = diff_vars[j];
-      const double x0 = get(values, var);
-      h = finite_step(x0, rel_step);
-      plus[var] = x0 + h;
-      minus[var] = x0 - h;
-    } else {
-      phi_plus = h;
-      phi_minus = -h;
-    }
-    double cp[3] = {0.0, 0.0, 0.0};
-    double cm[3] = {0.0, 0.0, 0.0};
-    if (!coords(plus, phi_plus, cp) || !coords(minus, phi_minus, cm)) {
-      return 0.0;
-    }
-    deriv[0][j] = (cp[0] - cm[0]) / (2.0 * h);
-    deriv[1][j] = (cp[1] - cm[1]) / (2.0 * h);
-    deriv[2][j] = wrap_angle(cp[2] - cm[2]) / (2.0 * h);
+  // d^3k/E = p dE dcos(theta) dphi is Lorentz invariant.  Combining that
+  // measure with W^2=M^2+2M(E_i^*-E_f^*)-Q^2 gives the exact full determinant
+  //
+  // |d(W,Q2,phi*) / d(E'_lab,cos(theta_lab),phi_lab)|
+  //       = 2 M p_i^* p'_lab / W.
+  //
+  // This is the same 3x3 transformation previously evaluated with six
+  // finite-difference kinematic solves per Fermi-motion sample.
+  if (!initial_state_fold_supports_diff(diff_vars)) return 0.0;
+  const double W = interaction.Kine().W();
+  const double M = interaction.InitState().Tgt().HitNucP4().M();
+  const double Ei_star =
+      interaction.InitState().ProbeE(genie::kRfHitNucRest);
+  const double mi = particle_mass(interaction.InitState().ProbePdg());
+  const double pi_star2 = Ei_star * Ei_star - mi * mi;
+  const double mf = final_lepton_mass(interaction);
+  const double Eprime = interaction.Kine().FSLeptonP4().E();
+  const double pf_lab2 = Eprime * Eprime - mf * mf;
+  if (!std::isfinite(W) || !std::isfinite(M) || !std::isfinite(Ei_star) ||
+      W <= 0.0 || M <= 0.0 || pi_star2 <= 0.0 || pf_lab2 <= 0.0) {
+    return 0.0;
   }
-  const double det =
-      deriv[0][0] * (deriv[1][1] * deriv[2][2] -
-                     deriv[1][2] * deriv[2][1]) -
-      deriv[0][1] * (deriv[1][0] * deriv[2][2] -
-                     deriv[1][2] * deriv[2][0]) +
-      deriv[0][2] * (deriv[1][0] * deriv[2][1] -
-                     deriv[1][1] * deriv[2][0]);
-  return std::fabs(det);
+  return 2.0 * M * std::sqrt(pi_star2) * std::sqrt(pf_lab2) / W;
 }
 
 TVector3 isotropic_vector(double magnitude, double u_costh, double u_phi)
@@ -3493,6 +3482,9 @@ double folded_state_density(const genie::XSecAlgorithmI &model,
       if (outside_phase_space) *outside_phase_space = true;
       return 0.0;
     }
+    // The event-chain checks above are authoritative. Avoid making every
+    // cross-section model repeat its own equivalent kinematic-limit lookup.
+    interaction.SetBit(genie::kISkipKinematicChk);
   } else {
     interaction.SetBit(genie::kISkipKinematicChk);
   }
@@ -3518,6 +3510,47 @@ std::pair<int, int> mec_cluster_constituents(int cluster_pdg)
   }
   throw std::runtime_error("MEC initial-state fold found unknown cluster PDG " +
                            std::to_string(cluster_pdg));
+}
+
+struct InitialStateFoldGrid {
+  std::vector<WeightedValue> radii;
+  std::vector<std::vector<WeightedValue>> momenta;
+  double removal_energy = 0.0;
+};
+
+std::string initial_state_fold_grid_key(const genie::Interaction &interaction,
+                                        const QELFoldConfig &cfg,
+                                        const Options &opt)
+{
+  std::ostringstream key;
+  key << std::setprecision(17)
+      << "model=" << reinterpret_cast<std::uintptr_t>(cfg.nucl_model)
+      << "|target=" << interaction.InitState().Tgt().Pdg()
+      << "|hit=" << interaction.InitState().Tgt().HitNucPdg()
+      << "|nr=" << opt.qel_fold_nr << "|np=" << opt.qel_fold_np
+      << "|pmax=" << opt.qel_fold_pmax << "|kf=" << opt.qel_fold_kf
+      << "|ermv=" << opt.qel_fold_removal_energy;
+  return key.str();
+}
+
+const InitialStateFoldGrid &cached_initial_state_fold_grid(
+    const genie::Interaction &interaction, const QELFoldConfig &cfg,
+    const Options &opt)
+{
+  static std::map<std::string, InitialStateFoldGrid> cache;
+  const std::string key = initial_state_fold_grid_key(interaction, cfg, opt);
+  auto found = cache.find(key);
+  if (found != cache.end()) return found->second;
+
+  InitialStateFoldGrid grid;
+  grid.radii = qel_radius_grid(interaction, cfg, opt);
+  grid.momenta.reserve(grid.radii.size());
+  for (const WeightedValue &radius : grid.radii) {
+    grid.momenta.push_back(
+        qel_momentum_grid(interaction, cfg, radius.value, opt));
+  }
+  grid.removal_energy = qel_fold_removal_energy(interaction, opt);
+  return cache.emplace(key, std::move(grid)).first->second;
 }
 
 double initial_state_fold_density(const genie::XSecAlgorithmI &model,
@@ -3582,15 +3615,11 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
       if (density > 0.0) ++accepted;
     }
   } else {
-    const std::vector<WeightedValue> radii =
-        qel_radius_grid(base_interaction, cfg, grid_opt);
-    std::vector<std::vector<WeightedValue>> pgrids;
-    for (const WeightedValue &radius : radii) {
-      pgrids.push_back(
-          qel_momentum_grid(base_interaction, cfg, radius.value, grid_opt));
-    }
-    const double removal_energy =
-        qel_fold_removal_energy(base_interaction, grid_opt);
+    const InitialStateFoldGrid &grid =
+        cached_initial_state_fold_grid(base_interaction, cfg, grid_opt);
+    const std::vector<WeightedValue> &radii = grid.radii;
+    const std::vector<std::vector<WeightedValue>> &pgrids = grid.momenta;
+    const double removal_energy = grid.removal_energy;
 
     for (int is = 0; is < opt.initial_state_fold_samples; ++is) {
       const std::uint64_t sample = static_cast<std::uint64_t>(is);
@@ -4002,30 +4031,140 @@ Options auto_fold_options(const Options &base,
   return resolved;
 }
 
-std::vector<ComponentValue> evaluate_tune_point(const Point &point,
-                                                const Options &opt)
-{
-  const double E = get(point.values, Var::E);
-  genie::InitialState init = make_initial_state(opt, E);
+struct TuneComponentSpec {
+  std::string name;
+  std::unique_ptr<genie::Interaction> interaction;
+  const genie::XSecAlgorithmI *model = nullptr;
+  Options options;
+  bool exact_zero = false;
+  std::string equivalent_key;
+};
 
-  genie::GEVGDriver driver;
-  driver.SetEventGeneratorList(opt.event_generator_list);
-  driver.Configure(init);
-  const genie::InteractionList *interactions = driver.Interactions();
+struct TuneContext {
+  std::unique_ptr<genie::GEVGDriver> driver;
+  std::vector<TuneComponentSpec> components;
+};
+
+std::unique_ptr<TuneContext> make_tune_context(double E, const Options &opt)
+{
+  genie::InitialState init = make_initial_state(opt, E);
+  auto context = std::make_unique<TuneContext>();
+  context->driver = std::make_unique<genie::GEVGDriver>();
+  context->driver->SetEventGeneratorList(opt.event_generator_list);
+  context->driver->Configure(init);
+  const genie::InteractionList *interactions = context->driver->Interactions();
   if (!interactions || interactions->empty()) {
     throw std::runtime_error("GEVGDriver returned no interactions");
   }
-
-  std::vector<ComponentValue> components;
   for (const genie::Interaction *interaction : *interactions) {
-    const genie::EventGeneratorI *generator = driver.FindGenerator(interaction);
+    const genie::EventGeneratorI *generator =
+        context->driver->FindGenerator(interaction);
     if (!generator || !generator->CrossSectionAlg()) continue;
     const genie::XSecAlgorithmI *model = generator->CrossSectionAlg();
-    const Options component_opt =
-        auto_fold_options(opt, *generator, *interaction, *model);
-    components.push_back(evaluate_component(component_name(*interaction, *model),
-                                            *model, *interaction, point.values,
-                                            component_opt));
+    TuneComponentSpec spec;
+    spec.name = component_name(*interaction, *model);
+    spec.interaction = std::make_unique<genie::Interaction>(*interaction);
+    spec.model = model;
+    spec.options = auto_fold_options(opt, *generator, *interaction, *model);
+    const genie::Target &target = interaction->InitState().Tgt();
+    const genie::Resonance_t resonance = interaction->ExclTag().Resonance();
+    bool uses_rs_em_proton_amplitudes = true;
+    const genie::Registry &model_config = model->GetConfig();
+    if (model_config.Exists("HelicityAmplEMpAlg")) {
+      uses_rs_em_proton_amplitudes =
+          model_config.GetAlg("HelicityAmplEMpAlg").name ==
+          "genie::RSHelicityAmplModelEMp";
+    }
+    spec.exact_zero =
+        interaction->ProcInfo().IsResonant() &&
+        interaction->ProcInfo().IsEM() &&
+        target.HitNucPdg() == genie::kPdgProton &&
+        model->Id().Name() == "genie::BergerSehgalRESPXSec2014" &&
+        uses_rs_em_proton_amplitudes &&
+        (resonance == genie::kS11_1650 ||
+         resonance == genie::kD13_1700 ||
+         resonance == genie::kD15_1675 ||
+         resonance == genie::kF17_1970);
+    if (interaction->ProcInfo().IsDeepInelastic() &&
+        interaction->ProcInfo().IsEM() && target.HitSeaQrk() &&
+        model->Id().Name() == "genie::KNOTunedQPMDISPXSec") {
+      // Electromagnetic DIS weights a sea quark and its antiquark identically.
+      // GENIE nevertheless emits both interaction-list entries.
+      spec.equivalent_key = model->Id().Key() + "|hit=" +
+                            std::to_string(target.HitNucPdg()) + "|sea=" +
+                            std::to_string(std::abs(target.HitQrkPdg()));
+    }
+    context->components.push_back(std::move(spec));
+  }
+  return context;
+}
+
+void prime_tune_context_caches(const TuneContext &context, double E)
+{
+  std::map<Var, double> energy_values;
+  energy_values[Var::E] = E;
+  for (const TuneComponentSpec &spec : context.components) {
+    const genie::Interaction &interaction = *spec.interaction;
+    if (spec.options.auto_initial_state_fold &&
+        interaction.InitState().Tgt().IsNucleus() &&
+        !interaction.ProcInfo().IsMEC()) {
+      Options grid_opt = spec.options;
+      grid_opt.qel_fold_nr = spec.options.initial_state_fold_nr;
+      grid_opt.qel_fold_np = spec.options.initial_state_fold_np;
+      const QELFoldConfig cfg = qel_fold_config(interaction);
+      (void)cached_initial_state_fold_grid(interaction, cfg, grid_opt);
+    }
+    if (shape_norm_applies_to_component(interaction, *spec.model,
+                                        spec.options)) {
+      (void)shape_norm_factor(*spec.model, interaction, energy_values,
+                              spec.options);
+    }
+  }
+}
+
+std::vector<ComponentValue> evaluate_tune_point(const Point &point,
+                                                const TuneContext &context)
+{
+  std::vector<ComponentValue> components;
+  components.reserve(context.components.size());
+  std::map<std::string, ComponentValue> equivalent_cache;
+  for (const TuneComponentSpec &spec : context.components) {
+    const genie::Interaction &interaction = *spec.interaction;
+    if (spec.exact_zero) {
+      ComponentValue zero;
+      zero.component = spec.name;
+      try {
+        if (spec.options.observable == Observable::Total &&
+            spec.options.integrate_over.empty()) {
+          if (has(point.values, Var::E)) {
+            zero.kin_values[Var::E] = get(point.values, Var::E);
+          }
+        } else if (spec.options.integrate_over.empty()) {
+          genie::Interaction tmp(interaction);
+          zero.kin_values =
+              output_map_from_kine(solve_kinematics(point.values, tmp));
+        }
+      } catch (const std::exception &e) {
+        if (spec.options.strict) throw;
+        zero.status = "invalid";
+        zero.message = e.what();
+      }
+      components.push_back(std::move(zero));
+      continue;
+    }
+    auto cached = equivalent_cache.find(spec.equivalent_key);
+    if (!spec.equivalent_key.empty() && cached != equivalent_cache.end()) {
+      ComponentValue reused = cached->second;
+      reused.component = spec.name;
+      components.push_back(std::move(reused));
+      continue;
+    }
+    ComponentValue value = evaluate_component(
+        spec.name, *spec.model, interaction, point.values, spec.options);
+    if (!spec.equivalent_key.empty()) {
+      equivalent_cache[spec.equivalent_key] = value;
+    }
+    components.push_back(std::move(value));
   }
   return components;
 }
@@ -4083,6 +4222,7 @@ void write_metadata(std::ostream &out, int argc, char **argv,
     out << "# em_q2_min_message," << csv_escape(g_em_q2_min_message) << "\n";
   }
   out << "# folding_mode," << (opt.auto_fold ? "auto" : "manual") << "\n";
+  out << "# jobs," << opt.jobs << "\n";
   out << "# qel_bin_fold," << (opt.qel_bin_fold ? "on" : "off") << "\n";
   out << "# qel_bin_fold_auto,"
       << (opt.auto_fold ? "model-dependent" : "off") << "\n";
@@ -4184,6 +4324,46 @@ void write_row(std::ostream &out, const Point &point,
   out << "\n";
 }
 
+void write_point_result(std::ostream &out, const Point &point,
+                        const std::vector<ComponentValue> &components,
+                        const Options &opt, double unit_factor)
+{
+  ComponentValue total;
+  total.component = "total";
+  bool all_components_ok = !components.empty();
+  bool have_kinematics = false;
+  if (components.empty()) {
+    total.status = "invalid";
+    total.message = "No cross-section components were evaluated";
+  }
+  for (const ComponentValue &component : components) {
+    if (component.status != "ok") all_components_ok = false;
+    if (component.status != "ok" && total.status == "ok") {
+      total.status = component.status;
+      total.message =
+          "Component " + component.component + ": " + component.message;
+    } else if (component.status == "ok") {
+      total.value += component.value;
+    }
+    if (!have_kinematics && !component.kin_values.empty()) {
+      total.kin_values = component.kin_values;
+      have_kinematics = true;
+    }
+  }
+  if (all_components_ok) {
+    total.status = "ok";
+    total.message.clear();
+  } else {
+    total.value = 0.0;
+  }
+  write_row(out, point, total, opt, unit_factor);
+  if (opt.components) {
+    for (const ComponentValue &component : components) {
+      write_row(out, point, component, opt, unit_factor);
+    }
+  }
+}
+
 int run(int argc, char **argv)
 {
   Options opt = parse_options(argc, argv);
@@ -4212,6 +4392,20 @@ int run(int argc, char **argv)
   const genie::XSecAlgorithmI *direct_model = nullptr;
   if (opt.mode == Mode::Alg) direct_model = get_xsec_alg(opt.xsec_alg);
 
+  std::map<double, std::unique_ptr<TuneContext>> tune_contexts;
+  std::vector<const TuneContext *> point_tune_context(points.size(), nullptr);
+  if (opt.mode == Mode::Tune) {
+    for (std::size_t index = 0; index < points.size(); ++index) {
+      const double E = get(points[index].values, Var::E);
+      auto found = tune_contexts.find(E);
+      if (found == tune_contexts.end()) {
+        found = tune_contexts.emplace(E, make_tune_context(E, opt)).first;
+        prime_tune_context_caches(*found->second, E);
+      }
+      point_tune_context[index] = found->second.get();
+    }
+  }
+
   std::filesystem::path out_path(opt.output_path);
   if (!out_path.parent_path().empty()) {
     std::filesystem::create_directories(out_path.parent_path());
@@ -4222,47 +4416,77 @@ int run(int argc, char **argv)
   write_metadata(out, argc, argv, opt);
   write_header(out);
 
-  for (const Point &point : points) {
-    std::vector<ComponentValue> components =
-        (opt.mode == Mode::Tune)
-            ? evaluate_tune_point(point, opt)
-            : evaluate_alg_point(point, opt, *direct_model);
+  auto evaluate_and_write = [&](std::ostream &stream, std::size_t begin,
+                                std::size_t end) {
+    for (std::size_t index = begin; index < end; ++index) {
+      const std::vector<ComponentValue> components =
+          (opt.mode == Mode::Tune)
+              ? evaluate_tune_point(points[index], *point_tune_context[index])
+              : evaluate_alg_point(points[index], opt, *direct_model);
+      write_point_result(stream, points[index], components, opt, unit_factor);
+    }
+  };
 
-    ComponentValue total;
-    total.component = "total";
-    bool all_components_ok = !components.empty();
-    bool have_kinematics = false;
-    if (components.empty()) {
-      total.status = "invalid";
-      total.message = "No cross-section components were evaluated";
+  const int njobs = std::min<int>(opt.jobs, static_cast<int>(points.size()));
+  if (njobs <= 1) {
+    evaluate_and_write(out, 0, points.size());
+  } else {
+    out.flush();
+    const std::string worker_prefix =
+        opt.output_path + ".workers-" + std::to_string(getpid()) + "-";
+    std::vector<pid_t> pids;
+    std::vector<std::filesystem::path> worker_paths(points.size());
+    for (std::size_t index = 0; index < points.size(); ++index) {
+      worker_paths[index] =
+          worker_prefix + std::to_string(index) + ".csv.tmp";
     }
-    for (const ComponentValue &component : components) {
-      if (component.status != "ok") {
-        all_components_ok = false;
+    for (int job = 0; job < njobs; ++job) {
+      const pid_t pid = fork();
+      if (pid < 0) throw std::runtime_error("fork failed for scan worker");
+      if (pid == 0) {
+        try {
+          for (std::size_t index = static_cast<std::size_t>(job);
+               index < points.size(); index += static_cast<std::size_t>(njobs)) {
+            std::ofstream worker_out(worker_paths[index]);
+            if (!worker_out) {
+              throw std::runtime_error("could not open worker output");
+            }
+            evaluate_and_write(worker_out, index, index + 1);
+            worker_out.close();
+          }
+          std::_Exit(0);
+        } catch (const std::exception &e) {
+          std::cerr << "xsec_scan worker " << job << ": " << e.what() << "\n";
+          std::_Exit(1);
+        }
       }
-      if (component.status != "ok" && total.status == "ok") {
-        total.status = component.status;
-        total.message = "Component " + component.component + ": " +
-                        component.message;
-      } else if (component.status == "ok") {
-        total.value += component.value;
-      }
-      if (!have_kinematics && !component.kin_values.empty()) {
-        total.kin_values = component.kin_values;
-        have_kinematics = true;
+      pids.push_back(pid);
+    }
+
+    bool worker_failed = false;
+    for (pid_t pid : pids) {
+      int status = 0;
+      if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) ||
+          WEXITSTATUS(status) != 0) {
+        worker_failed = true;
       }
     }
-    if (all_components_ok) {
-      total.status = "ok";
-      total.message.clear();
-    } else {
-      total.value = 0.0;
-    }
-    write_row(out, point, total, opt, unit_factor);
-    if (opt.components) {
-      for (const ComponentValue &component : components) {
-        write_row(out, point, component, opt, unit_factor);
+    if (!worker_failed) {
+      for (const std::filesystem::path &worker_path : worker_paths) {
+        std::ifstream worker_in(worker_path);
+        if (!worker_in) {
+          worker_failed = true;
+          break;
+        }
+        out << worker_in.rdbuf();
       }
+    }
+    for (const std::filesystem::path &worker_path : worker_paths) {
+      std::error_code ec;
+      std::filesystem::remove(worker_path, ec);
+    }
+    if (worker_failed) {
+      throw std::runtime_error("one or more scan workers failed");
     }
   }
 

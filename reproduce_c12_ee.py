@@ -208,6 +208,8 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
         "--xsec-unit",
         "nb",
         "--components",
+        "--jobs",
+        str(args.jobs),
         "--output",
         str(out_csv),
     ]
@@ -333,6 +335,7 @@ def write_summary(
         f.write(f"scanner: {SCANNER}\n")
         f.write(f"target: {TARGET_C12}\n")
         f.write(f"probe: {PROBE_ELECTRON}\n")
+        f.write(f"scanner jobs: {args.jobs}\n")
         f.write("unit conversion: ub/sr/GeV = nb/GeV/dcostheta / (2*pi*1000)\n\n")
         f.write("panel omega ranges:\n")
         for panel in panels:
@@ -515,6 +518,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--outdir", type=pathlib.Path, default=DEFAULT_OUTDIR)
     parser.add_argument("--stem", default="c12_ee_repro")
+    parser.add_argument(
+        "--jobs",
+        default="auto",
+        help="Forked scanner workers per panel (default: auto).",
+    )
     parser.add_argument("--reuse", action="store_true", help="Reuse existing panel CSVs.")
     parser.add_argument("--plot-only", action="store_true", help="Do not run xsec_scan.")
     parser.add_argument(

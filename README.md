@@ -159,6 +159,27 @@ generator would reject, including unphysical low-energy-transfer RES tails.
 It requires tune mode, where the resolved event-generator module chain is
 available for inspection, and cannot be combined with manual fold overrides.
 
+For scan-heavy folded curves, use process-isolated parallel workers:
+
+```bash
+--jobs auto
+```
+
+Workers are forked only after GENIE has built the tune and resolved the
+interaction list. This avoids ROOT/GENIE initialization races, shares the
+read-only initialized state through copy-on-write, and merges rows back in the
+original scan order. The paper-reproduction helper enables `--jobs auto` by
+default; use `--jobs 1` for serial diagnostics.
+
+The folded path also caches the nuclear radius/momentum quadrature by target,
+hit nucleon, nuclear model, and grid settings; uses the exact Lorentz-invariant
+Jacobian instead of six finite-difference solves per state; reuses identical EM
+sea-quark/antiquark DIS folds; and skips the exactly zero RS proton amplitudes.
+For the 96-point GEM21 C12 panel at 0.56 GeV and 60 degrees (512 fold states),
+the original 338.66 s run dropped to 15.18 s with `--jobs 1` (22.3x) and 5.44 s
+with ten workers (62.3x) on an Apple M1 Pro. All 5,376 output rows retained
+their status, with a maximum relative numerical difference of `7.9e-11`.
+
 For diagnostic/manual studies, select processes explicitly:
 
 ```bash
@@ -354,6 +375,7 @@ six-panel PNG/PDF:
   --panel-set fig6 \
   --tunes G21_11a_00_000,G18_10a_02_11a \
   --fold auto \
+  --jobs auto \
   --stem c12_ee_repro \
   --outdir out/c12_ee_repro
 ```
