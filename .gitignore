@@ -1,0 +1,13 @@
+out/
+build/
+__pycache__/
+*.py[cod]
+*.root
+*.csv
+*.log
+*.pdf
+*.png
+*.dylib
+*.so
+*.o
+.DS_Store
