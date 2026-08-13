@@ -36,7 +36,7 @@ ROOT_CFLAGS="$(root-config --cflags)"
 ROOT_LIBS="$(root-config --glibs) -lMinuit -lGeom -lEG -lGenVector -lMathMore"
 ROOT_LIBDIR="$(root-config --libdir 2>/dev/null || true)"
 
-GENIE_LIBS="$("$GENIE/bin/genie-config" --libs | sed 's/-lGPhHadTransp//g')"
+GENIE_LIBS="$("$GENIE/bin/genie-config" --libs)"
 
 EXT_CFLAGS=""
 EXT_LIBS=""
