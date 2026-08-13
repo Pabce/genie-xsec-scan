@@ -27,7 +27,10 @@ export DYLD_LIBRARY_PATH="$GENIE/lib:${DYLD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="$GENIE/lib:${LD_LIBRARY_PATH:-}"
 
 CXX="${CXX:-c++}"
-SRC="$SCRIPT_DIR/xsec_scan.cxx"
+SOURCES=(
+  "$SCRIPT_DIR/src/main.cxx"
+  "$SCRIPT_DIR/src/xsec_scan.cxx"
+)
 OUT_DIR="$SCRIPT_DIR/out"
 EXE="$OUT_DIR/xsec_scan"
 mkdir -p "$OUT_DIR"
@@ -84,8 +87,8 @@ if [[ -n "$PYTHIA6_LIBDIR" && -d "$PYTHIA6_LIBDIR" ]]; then
   RPATH_FLAGS+=" -Wl,-rpath,$PYTHIA6_LIBDIR"
 fi
 
-"$CXX" -std=c++17 -O3 -DNDEBUG -I"$GENIE/src" $ROOT_CFLAGS $EXT_CFLAGS ${GENIE_EXTRA_CFLAGS:-} \
-  "$SRC" -o "$EXE" \
+"$CXX" -std=c++17 -O3 -DNDEBUG -I"$SCRIPT_DIR/src" -I"$GENIE/src" $ROOT_CFLAGS $EXT_CFLAGS ${GENIE_EXTRA_CFLAGS:-} \
+  "${SOURCES[@]}" -o "$EXE" \
   $ROOT_LIBS $EXT_LIBS $GENIE_LIBS ${GENIE_EXTRA_LDFLAGS:-} $RPATH_FLAGS
 
 echo "$EXE"

@@ -33,6 +33,77 @@ The executable is written to:
 ./out/xsec_scan
 ```
 
+### Source layout
+
+The implementation lives under `src/`:
+
+- `main.cxx` is the executable entry point.
+- `xsec_scan.hpp` exposes the small command-line runner interface.
+- `xsec_scan.cxx` is the unity translation unit.
+- `detail/options.inc` owns CLI and batch configuration parsing.
+- `detail/runtime_points.inc` owns runtime paths and scan-point construction.
+- `detail/kinematics.inc` owns kinematic solving and transformations.
+- `detail/qel_folding.inc` and `detail/initial_state_folding.inc` own the two
+  deterministic fold implementations.
+- `detail/evaluation.inc` owns tune resolution, caching, and grouped component
+  evaluation.
+- `detail/output_run.inc` owns CSV metadata/output and process workers.
+
+The unity arrangement keeps scanner-only implementation symbols internal while
+making the formerly 4,900-line source navigable by responsibility.
+
+## Batch mode
+
+`--batch-config` evaluates several named kinematic scans in one process. This
+reuses tune contexts for repeated beam energies and shares cached nuclear-state
+quadrature and samples across all energies and angles:
+
+```bash
+./out/xsec_scan \
+  --batch-config config/c12_fig6_gem21.batch.ini
+```
+
+The configuration is dependency-free INI syntax. `[global]` uses CLI option
+names without the leading `--`; boolean flags accept `true` or `false`.
+Repeated `[scan NAME]` sections accept `fixed` and `range` entries:
+
+```ini
+[global]
+mode = tune
+tune = GEM21_11a_00_000
+event-generator-list = EM
+probe = 11
+target = 1000060120
+observable = d2
+diff = Eprime,costheta_l
+components = true
+fold = auto
+jobs = 1
+output = out/batch/example.csv
+
+[scan E056_th36]
+fixed = E=0.56
+fixed = costheta_l=0.809016994375
+range = Eprime:0.555:0.155:92
+
+[scan E056_th60]
+fixed = E=0.56
+fixed = costheta_l=0.5
+range = Eprime:0.555:0.105:96
+```
+
+Multiple `range` entries form a Cartesian product, matching repeated `--scan`
+arguments. Global `fixed` entries apply to every scan; scan-local values can
+override them. CLI options after `--batch-config` override scalar global
+settings, which is useful for `--jobs`, fold resolution, and output paths.
+Full-line comments begin with `#` or `;`.
+
+Batch CSVs add a `batch` column containing the section name. `row_id` remains
+globally increasing across sections, and rows retain configuration-file order.
+The bundled three-panel figure-6 example produces 252 points and 14,112 rows:
+9.43 s with `--jobs 1` and 2.96 s with `--jobs 10` on the benchmark M1 Pro.
+The serial and parallel outputs are identical.
+
 At runtime the executable prepends `config` to `GXMLPATH`
 when it can infer the path from its own location. This is harmless for stock
 GENIE releases where the electromagnetic Q2 floor is compiled into GENIE.
