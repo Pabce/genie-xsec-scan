@@ -3461,8 +3461,7 @@ TVector3 isotropic_vector(double magnitude, double u_costh, double u_phi)
                   magnitude * sinth * std::sin(phi), magnitude * costh);
 }
 
-double folded_state_density(const genie::XSecAlgorithmI &model,
-                            genie::Interaction &interaction,
+double prepare_folded_state(genie::Interaction &interaction,
                             const std::map<Var, double> &values,
                             const std::vector<Var> &diff_vars,
                             const Options &opt,
@@ -3488,12 +3487,26 @@ double folded_state_density(const genie::XSecAlgorithmI &model,
   } else {
     interaction.SetBit(genie::kISkipKinematicChk);
   }
-  if (!model.ValidProcess(&interaction)) return 0.0;
-  const double value = model.XSec(&interaction, genie::kPSWQ2fE);
-  if (!std::isfinite(value) || value <= 0.0) return 0.0;
   const double jac = folded_wq2_jacobian(interaction, values, diff_vars,
                                          opt.jac_step);
   if (!std::isfinite(jac) || jac <= 0.0) return 0.0;
+  return jac;
+}
+
+double folded_state_density(const genie::XSecAlgorithmI &model,
+                            genie::Interaction &interaction,
+                            const std::map<Var, double> &values,
+                            const std::vector<Var> &diff_vars,
+                            const Options &opt,
+                            bool *below_threshold = nullptr,
+                            bool *outside_phase_space = nullptr)
+{
+  const double jac = prepare_folded_state(
+      interaction, values, diff_vars, opt, below_threshold,
+      outside_phase_space);
+  if (jac <= 0.0 || !model.ValidProcess(&interaction)) return 0.0;
+  const double value = model.XSec(&interaction, genie::kPSWQ2fE);
+  if (!std::isfinite(value) || value <= 0.0) return 0.0;
   return value * jac;
 }
 
@@ -3553,6 +3566,34 @@ const InitialStateFoldGrid &cached_initial_state_fold_grid(
   return cache.emplace(key, std::move(grid)).first->second;
 }
 
+const std::vector<TVector3> &cached_initial_state_fold_momenta(
+    const genie::Interaction &interaction, const QELFoldConfig &cfg,
+    const Options &opt)
+{
+  static std::map<std::string, std::vector<TVector3>> cache;
+  const std::string key = initial_state_fold_grid_key(interaction, cfg, opt) +
+                          "|samples=" +
+                          std::to_string(opt.initial_state_fold_samples);
+  auto found = cache.find(key);
+  if (found != cache.end()) return found->second;
+
+  const InitialStateFoldGrid &grid =
+      cached_initial_state_fold_grid(interaction, cfg, opt);
+  std::vector<TVector3> momenta;
+  momenta.reserve(opt.initial_state_fold_samples);
+  for (int is = 0; is < opt.initial_state_fold_samples; ++is) {
+    const std::uint64_t sample = static_cast<std::uint64_t>(is);
+    const std::size_t ir =
+        select_weighted_index(grid.radii, qel_lattice_u(sample, 0));
+    const std::vector<WeightedValue> &pgrid = grid.momenta[ir];
+    const double p = pgrid[select_weighted_index(
+        pgrid, qel_lattice_u(sample, 1))].value;
+    momenta.push_back(isotropic_vector(
+        p, qel_lattice_u(sample, 2), qel_lattice_u(sample, 3)));
+  }
+  return cache.emplace(key, std::move(momenta)).first->second;
+}
+
 double initial_state_fold_density(const genie::XSecAlgorithmI &model,
                                   const genie::Interaction &base_interaction,
                                   const std::map<Var, double> &values,
@@ -3588,6 +3629,7 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
     const std::vector<WeightedValue> pgrid2 =
         qel_momentum_grid(second, cfg, 0.0, grid_opt);
     const double cluster_mass = particle_mass(cluster_pdg);
+    genie::Interaction state(base_interaction);
 
     for (int is = 0; is < opt.initial_state_fold_samples; ++is) {
       const std::uint64_t sample = static_cast<std::uint64_t>(is);
@@ -3600,7 +3642,6 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
                            qel_lattice_u(sample, 2)) +
           isotropic_vector(p2, qel_lattice_u(sample, 4),
                            qel_lattice_u(sample, 5));
-      genie::Interaction state(base_interaction);
       state.InitStatePtr()->TgtPtr()->SetHitNucP4(TLorentzVector(
           cluster_p3, std::sqrt(cluster_mass * cluster_mass +
                                 cluster_p3.Mag2())));
@@ -3617,20 +3658,13 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
   } else {
     const InitialStateFoldGrid &grid =
         cached_initial_state_fold_grid(base_interaction, cfg, grid_opt);
-    const std::vector<WeightedValue> &radii = grid.radii;
-    const std::vector<std::vector<WeightedValue>> &pgrids = grid.momenta;
     const double removal_energy = grid.removal_energy;
+    const std::vector<TVector3> &sample_momenta =
+        cached_initial_state_fold_momenta(base_interaction, cfg, grid_opt);
+    genie::Interaction state(base_interaction);
 
     for (int is = 0; is < opt.initial_state_fold_samples; ++is) {
-      const std::uint64_t sample = static_cast<std::uint64_t>(is);
-      const std::size_t ir =
-          select_weighted_index(radii, qel_lattice_u(sample, 0));
-      const std::vector<WeightedValue> &pgrid = pgrids[ir];
-      const double p = pgrid[select_weighted_index(
-          pgrid, qel_lattice_u(sample, 1))].value;
-      const TVector3 p3 = isotropic_vector(
-          p, qel_lattice_u(sample, 2), qel_lattice_u(sample, 3));
-      genie::Interaction state(base_interaction);
+      const TVector3 &p3 = sample_momenta[is];
       if (!qel_bind_old_fermi_mover(&state, cfg, p3, removal_energy)) continue;
       bool sample_below_threshold = false;
       bool sample_outside_phase_space = false;
@@ -4112,7 +4146,7 @@ void prime_tune_context_caches(const TuneContext &context, double E)
       grid_opt.qel_fold_nr = spec.options.initial_state_fold_nr;
       grid_opt.qel_fold_np = spec.options.initial_state_fold_np;
       const QELFoldConfig cfg = qel_fold_config(interaction);
-      (void)cached_initial_state_fold_grid(interaction, cfg, grid_opt);
+      (void)cached_initial_state_fold_momenta(interaction, cfg, grid_opt);
     }
     if (shape_norm_applies_to_component(interaction, *spec.model,
                                         spec.options)) {
@@ -4122,13 +4156,109 @@ void prime_tune_context_caches(const TuneContext &context, double E)
   }
 }
 
+std::vector<ComponentValue> evaluate_initial_state_fold_group(
+    const Point &point, const std::vector<const TuneComponentSpec *> &specs)
+{
+  std::vector<ComponentValue> results(specs.size());
+  for (std::size_t i = 0; i < specs.size(); ++i) {
+    results[i].component = specs[i]->name;
+  }
+  if (specs.empty()) return results;
+
+  const TuneComponentSpec &first = *specs.front();
+  const Options &opt = first.options;
+  try {
+    if (!initial_state_fold_supports_diff(opt.diff_vars)) {
+      throw std::runtime_error(
+          "--initial-state-fold supports only d2 Eprime/omega,costheta_l");
+    }
+    const std::map<Var, double> kine_values =
+        output_map_from_kine(solve_kinematics(point.values, *first.interaction));
+    for (ComponentValue &result : results) result.kin_values = kine_values;
+
+    Options grid_opt = opt;
+    grid_opt.qel_fold_nr = opt.initial_state_fold_nr;
+    grid_opt.qel_fold_np = opt.initial_state_fold_np;
+    const QELFoldConfig cfg = qel_fold_config(*first.interaction);
+    const InitialStateFoldGrid &grid =
+        cached_initial_state_fold_grid(*first.interaction, cfg, grid_opt);
+    const std::vector<TVector3> &sample_momenta =
+        cached_initial_state_fold_momenta(*first.interaction, cfg, grid_opt);
+    const double removal_energy = grid.removal_energy;
+
+    std::vector<double> sums(specs.size(), 0.0);
+    std::vector<long> accepted(specs.size(), 0);
+    long below_threshold = 0;
+    long outside_phase_space = 0;
+    genie::Interaction state(*first.interaction);
+    for (int is = 0; is < opt.initial_state_fold_samples; ++is) {
+      if (!qel_bind_old_fermi_mover(
+              &state, cfg, sample_momenta[is], removal_energy)) {
+        continue;
+      }
+      bool sample_below_threshold = false;
+      bool sample_outside_phase_space = false;
+      const double jac = prepare_folded_state(
+          state, point.values, opt.diff_vars, opt, &sample_below_threshold,
+          &sample_outside_phase_space);
+      below_threshold += sample_below_threshold ? 1 : 0;
+      outside_phase_space += sample_outside_phase_space ? 1 : 0;
+      if (jac <= 0.0) continue;
+
+      for (std::size_t i = 0; i < specs.size(); ++i) {
+        const genie::Interaction &source = *specs[i]->interaction;
+        state.ExclTagPtr()->Copy(source.ExclTag());
+        state.InitStatePtr()->TgtPtr()->SetHitQrkPdg(
+            source.InitState().Tgt().HitQrkPdg());
+        state.InitStatePtr()->TgtPtr()->SetHitSeaQrk(
+            source.InitState().Tgt().HitSeaQrk());
+        const genie::XSecAlgorithmI &model = *specs[i]->model;
+        if (!model.ValidProcess(&state)) continue;
+        const double value = model.XSec(&state, genie::kPSWQ2fE);
+        if (!std::isfinite(value) || value <= 0.0) continue;
+        sums[i] += value * jac;
+        ++accepted[i];
+      }
+    }
+
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+      const double folded =
+          sums[i] / static_cast<double>(opt.initial_state_fold_samples);
+      results[i].value = apply_shape_norm(
+          *specs[i]->model, *specs[i]->interaction, point.values,
+          specs[i]->options, folded);
+      if (opt.initial_state_fold_debug) {
+        std::cerr << "initial-state-fold component=" << specs[i]->name
+                  << " samples=" << opt.initial_state_fold_samples
+                  << " accepted=" << accepted[i]
+                  << " below-threshold=" << below_threshold
+                  << " outside-phase-space=" << outside_phase_space
+                  << " density=" << folded << "\n";
+      }
+    }
+  } catch (const std::exception &e) {
+    if (opt.strict) throw;
+    for (ComponentValue &result : results) {
+      result.status = "invalid";
+      result.value = 0.0;
+      result.message = e.what();
+    }
+  }
+  return results;
+}
+
 std::vector<ComponentValue> evaluate_tune_point(const Point &point,
                                                 const TuneContext &context)
 {
-  std::vector<ComponentValue> components;
-  components.reserve(context.components.size());
-  std::map<std::string, ComponentValue> equivalent_cache;
-  for (const TuneComponentSpec &spec : context.components) {
+  std::vector<ComponentValue> components(context.components.size());
+  std::vector<bool> ready(context.components.size(), false);
+  std::vector<std::size_t> alias_owner(context.components.size(),
+                                       context.components.size());
+  std::map<std::string, std::size_t> equivalent_owner;
+  std::map<std::string, std::vector<std::size_t>> fold_groups;
+
+  for (std::size_t index = 0; index < context.components.size(); ++index) {
+    const TuneComponentSpec &spec = context.components[index];
     const genie::Interaction &interaction = *spec.interaction;
     if (spec.exact_zero) {
       ComponentValue zero;
@@ -4149,22 +4279,62 @@ std::vector<ComponentValue> evaluate_tune_point(const Point &point,
         zero.status = "invalid";
         zero.message = e.what();
       }
-      components.push_back(std::move(zero));
+      components[index] = std::move(zero);
+      ready[index] = true;
       continue;
     }
-    auto cached = equivalent_cache.find(spec.equivalent_key);
-    if (!spec.equivalent_key.empty() && cached != equivalent_cache.end()) {
-      ComponentValue reused = cached->second;
-      reused.component = spec.name;
-      components.push_back(std::move(reused));
-      continue;
-    }
-    ComponentValue value = evaluate_component(
-        spec.name, *spec.model, interaction, point.values, spec.options);
     if (!spec.equivalent_key.empty()) {
-      equivalent_cache[spec.equivalent_key] = value;
+      auto owner = equivalent_owner.find(spec.equivalent_key);
+      if (owner != equivalent_owner.end()) {
+        alias_owner[index] = owner->second;
+        continue;
+      }
+      equivalent_owner[spec.equivalent_key] = index;
     }
-    components.push_back(std::move(value));
+    if (initial_state_fold_applies(interaction, spec.options) &&
+        !interaction.ProcInfo().IsMEC() &&
+        interaction.InitState().Tgt().IsNucleus()) {
+      std::ostringstream key;
+      key << reinterpret_cast<std::uintptr_t>(spec.model)
+          << "|proc=" << interaction.ProcInfo().ScatteringTypeId()
+          << "|hit=" << interaction.InitState().Tgt().HitNucPdg()
+          << "|samples=" << spec.options.initial_state_fold_samples
+          << "|nr=" << spec.options.initial_state_fold_nr
+          << "|np=" << spec.options.initial_state_fold_np
+          << "|diff=" << diff_label(spec.options.diff_vars);
+      fold_groups[key.str()].push_back(index);
+    }
+  }
+
+  for (const auto &entry : fold_groups) {
+    if (entry.second.size() < 2) continue;
+    std::vector<const TuneComponentSpec *> specs;
+    specs.reserve(entry.second.size());
+    for (std::size_t index : entry.second) {
+      specs.push_back(&context.components[index]);
+    }
+    std::vector<ComponentValue> grouped =
+        evaluate_initial_state_fold_group(point, specs);
+    for (std::size_t i = 0; i < entry.second.size(); ++i) {
+      components[entry.second[i]] = std::move(grouped[i]);
+      ready[entry.second[i]] = true;
+    }
+  }
+
+  for (std::size_t index = 0; index < context.components.size(); ++index) {
+    if (ready[index] || alias_owner[index] != context.components.size()) {
+      continue;
+    }
+    const TuneComponentSpec &spec = context.components[index];
+    components[index] = evaluate_component(
+        spec.name, *spec.model, *spec.interaction, point.values, spec.options);
+    ready[index] = true;
+  }
+  for (std::size_t index = 0; index < context.components.size(); ++index) {
+    if (alias_owner[index] == context.components.size()) continue;
+    components[index] = components[alias_owner[index]];
+    components[index].component = context.components[index].name;
+    ready[index] = true;
   }
   return components;
 }

@@ -175,10 +175,16 @@ The folded path also caches the nuclear radius/momentum quadrature by target,
 hit nucleon, nuclear model, and grid settings; uses the exact Lorentz-invariant
 Jacobian instead of six finite-difference solves per state; reuses identical EM
 sea-quark/antiquark DIS folds; and skips the exactly zero RS proton amplitudes.
+Within each scan point, RES or DIS components sharing a hit nucleon now prepare
+the bound nuclear state, boosted lepton kinematics, event phase-space checks,
+and Jacobian once per fold sample before evaluating the channel-specific model
+terms. The cached nuclear samples do not depend on beam energy or angle, so the
+same machinery is reusable by multi-kinematic batch scans.
 For the 96-point GEM21 C12 panel at 0.56 GeV and 60 degrees (512 fold states),
-the original 338.66 s run dropped to 15.18 s with `--jobs 1` (22.3x) and 5.44 s
-with ten workers (62.3x) on an Apple M1 Pro. All 5,376 output rows retained
-their status, with a maximum relative numerical difference of `7.9e-11`.
+the original 338.66 s run dropped to 5.94 s with `--jobs 1` (57.0x) and 3.27 s
+with ten workers (103.6x) on an Apple M1 Pro. All 5,376 output rows are
+byte-for-byte identical to the preceding optimized implementation and retain
+the original statuses and physics values.
 
 For diagnostic/manual studies, select processes explicitly:
 
