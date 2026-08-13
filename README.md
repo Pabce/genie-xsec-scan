@@ -133,8 +133,33 @@ electron-scattering figures in `d2σ/dΩdE`, divide by `2*pi`.
 ### RES, MEC, and DIS Initial-State Folds
 
 Direct `XSec()` evaluation does not run the event-generation modules that add
-initial-state motion. For lab-frame inclusive curves, enable their deterministic
-counterparts with:
+initial-state motion. For event-generator-equivalent inclusive lepton curves,
+use the model-aware mode:
+
+```bash
+--fold auto
+```
+
+Auto mode follows the standard GENIE generator ordering for the configured
+cross-section model:
+
+- Rosenbluth QE is folded because its generator applies nuclear motion before
+  sampling lepton kinematics.
+- SuSAv2/hadron-tensor QE is evaluated directly because its specialized
+  generator samples lepton kinematics from the nuclear tensor.
+- RES and DIS are folded because `FermiMover` precedes their kinematics
+  generators.
+- Empirical MEC is folded because it samples the dinucleon momentum before
+  lepton kinematics. SuSAv2 and Nieves/Valencia MEC are evaluated directly
+  because they sample lepton kinematics from the nuclear tensor first.
+
+Auto mode also applies GENIE's event-chain threshold and W/Q2 phase-space
+vetoes. This removes cross section from folded nuclear states that the event
+generator would reject, including unphysical low-energy-transfer RES tails.
+It requires tune mode, where the resolved event-generator module chain is
+available for inspection, and cannot be combined with manual fold overrides.
+
+For diagnostic/manual studies, select processes explicitly:
 
 ```bash
 --initial-state-fold RES,MEC,DIS \
@@ -148,11 +173,11 @@ RES and DIS reproduce the configured nuclear-model sampling plus the
 `MECGenerator::GenerateFermiMomentum`: it samples two constituent nucleons at
 radius zero, sums their momenta, and keeps the di-nucleon cluster on shell.
 The fold is deterministic (Halton points), opt-in in `xsec_scan`, and currently
-supports `d2` in `Eprime/omega,costheta_l`. The paper-reproduction helper enables
-all three folds by default; pass `--initial-state-fold off` for the old direct
-model curves.
+supports `d2` in `Eprime/omega,costheta_l`. Explicit process selection is a
+manual override and can be physically inappropriate—for example, SuSAv2 MEC
+has no dinucleon code until after lepton kinematics are selected.
 
-The cross-section-only fold normally retains model values outside GENIE's
+The manually selected cross-section fold normally retains model values outside GENIE's
 event-generator phase space. To reproduce the event chain's rejection behavior,
 including the RES `WLim()` and `Q2Lim_W()` checks applied after Fermi motion,
 enable:
@@ -328,7 +353,7 @@ six-panel PNG/PDF:
 ./reproduce_c12_ee.py \
   --panel-set fig6 \
   --tunes G21_11a_00_000,G18_10a_02_11a \
-  --qel-bin-fold \
+  --fold auto \
   --stem c12_ee_repro \
   --outdir out/c12_ee_repro
 ```
@@ -338,7 +363,8 @@ energy/angle settings. Give each run a distinct `--outdir` and `--stem`.
 
 It converts the scanner output from `nb/GeV/dcostheta_l` to
 `microbarn/sr/GeV` using `1/(2*pi*1000)` and groups component rows into QE,
-MEC, RES, DIS, and total curves. With `--qel-bin-fold`, Rosenbluth QE uses
+MEC, RES, DIS, and total curves. The helper defaults to `--fold auto`.
+When auto mode selects a Rosenbluth QE fold, it uses
 `--qel-fold-density exact-theta` by default: the scanner evaluates the fixed
 lab-angle QE energy-conservation condition deterministically instead of
 histogramming generated events. Increase `--qel-fold-nr`, `--qel-fold-np`, and

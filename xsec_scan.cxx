@@ -192,6 +192,9 @@ struct Options {
   double qel_fold_removal_energy = -1.0;
   bool qel_fold_scan_cache = true;
   bool qel_fold_debug = false;
+  bool auto_fold = false;
+  bool auto_qel_fold = false;
+  bool auto_initial_state_fold = false;
   std::set<std::string> initial_state_fold;
   int initial_state_fold_samples = 512;
   int initial_state_fold_nr = 12;
@@ -410,6 +413,7 @@ void print_usage(std::ostream &os)
       << "  --qel-fold-ncos0 N --qel-fold-nphi0 N\n"
       << "  --qel-fold-pmax VALUE --qel-fold-kf VALUE --qel-fold-removal-energy VALUE\n"
       << "  --no-qel-fold-scan-cache disable one-pass scan filling for supported QE scans\n"
+      << "  --fold auto model-aware event-generator-path folding with phase-space vetoes\n"
       << "  --initial-state-fold RES,MEC,DIS deterministic event-chain initial-state fold\n"
       << "  --initial-state-fold-samples N --initial-state-fold-nr N --initial-state-fold-np N\n"
       << "  --initial-state-fold-event-phase-space apply GENIE event-chain phase-space vetoes\n"
@@ -509,7 +513,8 @@ Options parse_options(int argc, char **argv)
     };
     if (arg == "--help" || arg == "-h") {
       print_usage(std::cout);
-      std::exit(0);
+      std::cout.flush();
+      std::_Exit(0);
     } else if (arg == "--mode") {
       opt.mode = parse_mode(need_value(arg));
     } else if (arg == "--tune") {
@@ -604,9 +609,23 @@ Options parse_options(int argc, char **argv)
       opt.qel_fold_scan_cache = false;
     } else if (arg == "--qel-fold-debug") {
       opt.qel_fold_debug = true;
+    } else if (arg == "--fold") {
+      const std::string mode = lower(trim(need_value(arg)));
+      if (mode == "auto") {
+        opt.auto_fold = true;
+      } else if (mode == "manual" || mode == "off" || mode == "none") {
+        opt.auto_fold = false;
+      } else {
+        throw std::runtime_error("--fold accepts only auto, manual, or off");
+      }
     } else if (arg == "--initial-state-fold") {
       for (std::string process : split(need_value(arg), ',')) {
-        process = lower(process);
+        process = lower(trim(process));
+        if (process.empty() || process == "off" || process == "none") continue;
+        if (process == "auto") {
+          opt.auto_fold = true;
+          continue;
+        }
         if (process == "all") {
           opt.initial_state_fold.insert("res");
           opt.initial_state_fold.insert("mec");
@@ -717,6 +736,21 @@ Options parse_options(int argc, char **argv)
   }
   if (opt.mode == Mode::Alg && opt.xsec_alg.empty()) {
     throw std::runtime_error("--mode alg requires --xsec-alg");
+  }
+  if (opt.mode == Mode::Alg && opt.auto_fold) {
+    throw std::runtime_error(
+        "--fold auto requires --mode tune so the resolved event-generator "
+        "module chain can be inspected");
+  }
+  if (opt.auto_fold && opt.qel_bin_fold) {
+    throw std::runtime_error(
+        "--qel-bin-fold is a manual override and cannot be combined with "
+        "--fold auto");
+  }
+  if (opt.auto_fold && !opt.initial_state_fold.empty()) {
+    throw std::runtime_error(
+        "an explicit --initial-state-fold process list cannot be combined "
+        "with --fold auto");
   }
   if (opt.interaction_sum != "generated" && opt.interaction_sum != "hit-state") {
     throw std::runtime_error("--interaction-sum must be generated or hit-state");
@@ -3275,6 +3309,7 @@ bool initial_state_fold_applies(const genie::Interaction &interaction,
                                 const Options &opt)
 {
   const genie::ProcessInfo &process = interaction.ProcInfo();
+  if (opt.auto_initial_state_fold) return true;
   if (process.IsResonant()) return opt.initial_state_fold.count("res") != 0;
   if (process.IsMEC()) return opt.initial_state_fold.count("mec") != 0;
   if (process.IsDeepInelastic()) return opt.initial_state_fold.count("dis") != 0;
@@ -3448,7 +3483,7 @@ double folded_state_density(const genie::XSecAlgorithmI &model,
   if (below_threshold) *below_threshold = false;
   if (outside_phase_space) *outside_phase_space = false;
   if (!apply_folded_kinematics(&interaction, values)) return 0.0;
-  if (opt.initial_state_fold_event_phase_space) {
+  if (opt.auto_fold || opt.initial_state_fold_event_phase_space) {
     interaction.ResetBit(genie::kISkipKinematicChk);
     if (!interaction.PhaseSpace().IsAboveThreshold()) {
       if (below_threshold) *below_threshold = true;
@@ -3824,7 +3859,8 @@ double evaluate_model(const genie::XSecAlgorithmI &model,
     if (!opt.integrate_over.empty()) {
       throw std::runtime_error("d2 does not support extra integration variables");
     }
-    if (opt.qel_bin_fold && is_rosenbluth_qel(base_interaction, model)) {
+    if ((opt.auto_qel_fold || opt.qel_bin_fold) &&
+        is_rosenbluth_qel(base_interaction, model)) {
       return rosenbluth_qel_bin_fold_density(model, base_interaction, values, opt);
     }
     if (initial_state_fold_applies(base_interaction, opt)) {
@@ -3900,6 +3936,72 @@ ComponentValue evaluate_component(const std::string &name,
   return out;
 }
 
+int event_generator_module_index(const genie::EventGeneratorI &generator,
+                                 const std::string &name_fragment)
+{
+  const genie::Registry &config = generator.GetConfig();
+  if (!config.Exists("NModules")) return -1;
+  const int nmodules = config.GetInt("NModules");
+  for (int index = 0; index < nmodules; ++index) {
+    const std::string key = "Module-" + std::to_string(index);
+    if (!config.Exists(key)) continue;
+    const RgAlg module = config.GetAlg(key);
+    if (module.name.find(name_fragment) != std::string::npos) return index;
+  }
+  return -1;
+}
+
+Options auto_fold_options(const Options &base,
+                          const genie::EventGeneratorI &generator,
+                          const genie::Interaction &interaction,
+                          const genie::XSecAlgorithmI &model)
+{
+  Options resolved = base;
+  resolved.auto_qel_fold = false;
+  resolved.auto_initial_state_fold = false;
+  if (!base.auto_fold) return resolved;
+
+  const genie::ProcessInfo &process = interaction.ProcInfo();
+  const int fermi = event_generator_module_index(generator, "FermiMover");
+  if (process.IsQuasiElastic()) {
+    const int kinematics =
+        event_generator_module_index(generator, "QELKinematicsGenerator");
+    resolved.auto_qel_fold = is_rosenbluth_qel(interaction, model) &&
+                             fermi >= 0 && kinematics > fermi;
+  } else if (process.IsResonant()) {
+    const int kinematics =
+        event_generator_module_index(generator, "RESKinematicsGenerator");
+    resolved.auto_initial_state_fold = fermi >= 0 && kinematics > fermi;
+  } else if (process.IsDeepInelastic()) {
+    const int kinematics =
+        event_generator_module_index(generator, "DISKinematicsGenerator");
+    resolved.auto_initial_state_fold = fermi >= 0 && kinematics > fermi;
+  } else if (process.IsMEC()) {
+    const int mec_generator =
+        event_generator_module_index(generator, "MECGenerator");
+    resolved.auto_initial_state_fold =
+        mec_generator >= 0 && is_empirical_mec(interaction, model);
+  }
+  static std::set<std::string> reported;
+  const std::string process_name =
+      genie::ScatteringType::AsString(process.ScatteringTypeId());
+  const std::string report_key = process_name + "|" + model.Id().Key() +
+                                 "|" + generator.Id().Key();
+  if (reported.insert(report_key).second) {
+    std::cerr << "auto-fold process=" << process_name
+              << " model=" << model.Id().Key()
+              << " generator=" << generator.Id().Key()
+              << " qel=" << (resolved.auto_qel_fold ? "on" : "off")
+              << " initial-state="
+              << (resolved.auto_initial_state_fold ? "on" : "off")
+              << " event-phase-space="
+              << ((resolved.auto_qel_fold || resolved.auto_initial_state_fold)
+                      ? "on" : "not-applicable")
+              << "\n";
+  }
+  return resolved;
+}
+
 std::vector<ComponentValue> evaluate_tune_point(const Point &point,
                                                 const Options &opt)
 {
@@ -3919,8 +4021,11 @@ std::vector<ComponentValue> evaluate_tune_point(const Point &point,
     const genie::EventGeneratorI *generator = driver.FindGenerator(interaction);
     if (!generator || !generator->CrossSectionAlg()) continue;
     const genie::XSecAlgorithmI *model = generator->CrossSectionAlg();
+    const Options component_opt =
+        auto_fold_options(opt, *generator, *interaction, *model);
     components.push_back(evaluate_component(component_name(*interaction, *model),
-                                            *model, *interaction, point.values, opt));
+                                            *model, *interaction, point.values,
+                                            component_opt));
   }
   return components;
 }
@@ -3977,9 +4082,19 @@ void write_metadata(std::ostream &out, int argc, char **argv,
   if (!g_em_q2_min_message.empty()) {
     out << "# em_q2_min_message," << csv_escape(g_em_q2_min_message) << "\n";
   }
+  out << "# folding_mode," << (opt.auto_fold ? "auto" : "manual") << "\n";
   out << "# qel_bin_fold," << (opt.qel_bin_fold ? "on" : "off") << "\n";
+  out << "# qel_bin_fold_auto,"
+      << (opt.auto_fold ? "model-dependent" : "off") << "\n";
   out << "# initial_state_fold,";
-  if (opt.initial_state_fold.empty()) {
+  if (opt.auto_fold) {
+    out << "auto\n";
+    out << "# initial_state_fold_samples,"
+        << opt.initial_state_fold_samples << "\n";
+    out << "# initial_state_fold_nr," << opt.initial_state_fold_nr << "\n";
+    out << "# initial_state_fold_np," << opt.initial_state_fold_np << "\n";
+    out << "# initial_state_fold_event_phase_space,on\n";
+  } else if (opt.initial_state_fold.empty()) {
     out << "off\n";
   } else {
     bool first = true;
@@ -4003,7 +4118,7 @@ void write_metadata(std::ostream &out, int argc, char **argv,
     out << "# shape_norm_auto_threshold,"
         << opt.shape_norm_auto_threshold << "\n";
   }
-  if (opt.qel_bin_fold) {
+  if (opt.auto_fold || opt.qel_bin_fold) {
     out << "# qel_bin_width_energy," << opt.qel_bin_width_energy << "\n";
     out << "# qel_bin_width_costheta_l," << opt.qel_bin_width_costh << "\n";
     out << "# qel_fold_method," << opt.qel_fold_method << "\n";

@@ -211,9 +211,10 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
         "--output",
         str(out_csv),
     ]
-    if args.qel_bin_fold:
+    if args.fold == "auto":
+        cmd += ["--fold", "auto"]
+    if args.qel_bin_fold or args.fold == "auto":
         cmd += [
-            "--qel-bin-fold",
             "--qel-bin-width",
             f"Eprime={args.qel_bin_width_energy:.12g}",
             "--qel-bin-width",
@@ -237,6 +238,8 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
             "--qel-fold-nphi0",
             str(args.qel_fold_nphi0),
         ]
+        if args.qel_bin_fold:
+            cmd += ["--qel-bin-fold"]
         if args.no_qel_fold_scan_cache:
             cmd += ["--no-qel-fold-scan-cache"]
         if args.qel_fold_kf is not None:
@@ -338,9 +341,9 @@ def write_summary(
                 f"{panel['omega_max']} GeV, n={int(panel['n'] * args.nscale)}\n"
             )
         f.write("\n")
-        if args.qel_bin_fold:
+        if args.qel_bin_fold or args.fold == "auto":
             f.write(
-                "Rosenbluth QE fold: "
+                f"Rosenbluth QE fold: mode={args.fold}, "
                 f"dE={args.qel_bin_width_energy}, "
                 f"dcostheta={args.qel_bin_width_costh}, "
                 f"method={args.qel_fold_method}, "
@@ -363,15 +366,15 @@ def write_summary(
                 f"grid={args.shape_norm_ne}x{args.shape_norm_ncosth}, "
                 f"auto-threshold={args.shape_norm_auto_threshold}\n\n"
             )
-        if args.initial_state_fold.lower() != "off":
+        if args.fold == "auto" or args.initial_state_fold.lower() != "off":
             f.write(
                 "Initial-state fold: "
-                f"{args.initial_state_fold}, "
+                f"{args.fold if args.fold == 'auto' else args.initial_state_fold}, "
                 f"samples={args.initial_state_fold_samples}, "
                 f"nr={args.initial_state_fold_nr}, "
                 f"np={args.initial_state_fold_np}, "
                 "event-phase-space="
-                f"{'on' if args.initial_state_fold_event_phase_space else 'off'}\n\n"
+                f"{'on' if args.fold == 'auto' or args.initial_state_fold_event_phase_space else 'off'}\n\n"
             )
         for tune in tunes:
             f.write(f"{tune}\n")
@@ -526,6 +529,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Keep the caller's GXMLPATH instead of clearing it for tune-safe default lookup.",
     )
     parser.add_argument(
+        "--fold",
+        choices=("auto", "manual", "off"),
+        default="auto",
+        help=(
+            "Select generator-path-aware folding (default: auto). Auto folds "
+            "Rosenbluth QE, Empirical MEC, RES, and DIS only when their "
+            "standard event-generator path samples after initial-state motion."
+        ),
+    )
+    parser.add_argument(
         "--qel-bin-fold",
         action="store_true",
         help="Enable the scanner's opt-in Rosenbluth QE fold.",
@@ -621,8 +634,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--initial-state-fold",
-        default="RES,MEC,DIS",
-        help="Processes to fold deterministically, or 'off' (default: RES,MEC,DIS).",
+        default="off",
+        help="Manual processes to fold deterministically, or 'off' (default: off).",
     )
     parser.add_argument(
         "--initial-state-fold-samples",
@@ -695,6 +708,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.fold == "auto" and args.qel_bin_fold:
+        raise SystemExit(
+            "--qel-bin-fold is a manual override and cannot be combined with --fold auto"
+        )
+    if args.fold == "auto" and args.initial_state_fold.lower() not in ("off", "none"):
+        raise SystemExit(
+            "an explicit --initial-state-fold process list cannot be combined with --fold auto"
+        )
     if args.empirical_mec_shape_norm:
         args.shape_norm = "empirical-mec"
     if args.empirical_mec_shape_norm_ne is not None:
