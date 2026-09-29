@@ -1,6 +1,6 @@
-# Standalone GENIE Cross-Section Scanner
+# Standalone GENIE Inclusive Cross-Section Scanner
 
-`xsec_scan` evaluates GENIE cross-section models directly and writes CSV curves.
+`xsec_scan` evaluates GENIE cross-section models directly (at the inclusive level) and writes CSV curves.
 It does not generate events or histogram an event sample.
 
 The scanner is a standalone add-on: it is versioned separately from GENIE and
