@@ -252,9 +252,9 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
                 f"{args.qel_fold_removal_energy:.12g}",
             ]
     if args.initial_state_fold.lower() != "off":
+        cmd += ["--initial-state-fold", args.initial_state_fold]
+    if args.fold == "auto" or args.initial_state_fold.lower() != "off":
         cmd += [
-            "--initial-state-fold",
-            args.initial_state_fold,
             "--initial-state-fold-samples",
             str(args.initial_state_fold_samples),
             "--initial-state-fold-nr",
