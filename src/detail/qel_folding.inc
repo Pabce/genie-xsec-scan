@@ -560,7 +560,7 @@ double rosenbluth_qel_old_generator_q2_xsec(
   if (debug) ++debug->kin_ok;
   if (!qel_passes_old_pauli_blocker(*interaction, cfg, debug)) return 0.0;
   if (debug) ++debug->xsec_ok;
-  return xsec;
+  return xsec * qel_hit_nucleon_count(interaction->InitState().Tgt());
 }
 
 double rosenbluth_qel_evgen_xsec(const genie::XSecAlgorithmI &model,
@@ -1494,12 +1494,23 @@ double rosenbluth_qel_lattice_fold_density(
   return folded / (opt.qel_bin_width_energy * opt.qel_bin_width_costh);
 }
 
+#include "qel_adaptive.inc"
+
 double rosenbluth_qel_bin_fold_density(
     const genie::XSecAlgorithmI &model,
     const genie::Interaction &base_interaction,
     const std::map<Var, double> &values,
     const Options &opt)
 {
+  if (!qel_bin_fold_supports_diff(opt.diff_vars)) {
+    throw std::runtime_error("QE fold supports d2 Eprime/omega,costheta_l only");
+  }
+  if (opt.qel_fold_density == "native-q2-reference") {
+    return rosenbluth_qel_native_reference(model, base_interaction, values, opt);
+  }
+  if (opt.qel_fold_density == "auto" || opt.qel_fold_density == "adaptive-theta") {
+    return rosenbluth_qel_adaptive_theta(model, base_interaction, values, opt);
+  }
   if (opt.qel_fold_density == "exact-theta") {
     return rosenbluth_qel_exact_theta_density(
         model, base_interaction, values, opt);

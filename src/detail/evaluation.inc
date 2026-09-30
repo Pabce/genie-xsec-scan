@@ -295,13 +295,16 @@ ComponentValue evaluate_component(const std::string &name,
       genie::Interaction tmp(interaction);
       out.kin_values = output_map_from_kine(solve_kinematics(values, tmp));
     }
+    g_qe_accuracy_message.clear();
     out.value = evaluate_model(model, interaction, values, opt);
+    if (!g_qe_accuracy_message.empty()) out.message = g_qe_accuracy_message;
     if (!std::isfinite(out.value)) throw std::runtime_error("non-finite result");
   } catch (const std::exception &e) {
     if (opt.strict) throw;
-    out.status = "invalid";
-    out.value = 0.0;
     out.message = e.what();
+    out.status = out.message.rfind("QE nonconverged:", 0) == 0
+                     ? "nonconverged" : "invalid";
+    out.value = 0.0;
   }
   return out;
 }

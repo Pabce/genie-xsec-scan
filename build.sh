@@ -31,7 +31,7 @@ SOURCES=(
   "$SCRIPT_DIR/src/main.cxx"
   "$SCRIPT_DIR/src/xsec_scan.cxx"
 )
-OUT_DIR="$SCRIPT_DIR/out"
+OUT_DIR="${XSEC_SCAN_OUT_DIR:-$SCRIPT_DIR/out}"
 EXE="$OUT_DIR/xsec_scan"
 mkdir -p "$OUT_DIR"
 
