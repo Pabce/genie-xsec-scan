@@ -40,11 +40,16 @@ shell delimited by these crossings the normalized momentum histogram is
 constant. The configured old FermiMover's bound energy depends on momentum,
 not radius, for the supported configurations. At fixed p and energy transfer,
 the final momentum magnitude is fixed as well, so Pauli acceptance is simply
-r >= r_block(p,omega) for monotone density.
+kF_recoil(r) <= p_final. For monotone density this is r >= r_block.
+For C12 the modified harmonic-oscillator density has a shallow central dip;
+the allowed radial region may contain both a central interval and an outer
+interval. Locate its maximum, partition both monotone branches at every
+native histogram threshold, and sum the accepted intervals.
 
 We therefore cache per-shell momentum PDFs and suffix integrals of their
 r^2 rho(r) weights. Evaluating a momentum bin's radially marginalized density
-needs one radial root, one partial-shell scalar integral, and a suffix lookup.
+uses radial roots, partial-shell scalar integrals, and suffix lookups
+on each monotone branch (one branch for Ar/Ca, two for C12).
 This removes the expensive outer nuclear-radius integration from XSec calls.
 Momentum integration splits at histogram edges, energy-constraint roots and
 radial Pauli-shell crossings. Azimuth integration locates phase-limit crossings
@@ -53,7 +58,7 @@ an embedded error estimate alone can miss an unsampled allowed island.
 
 The adapter verifies selected native Prob values in every shell against its
 reconstructed probabilities and refuses incompatible configurations. Nuclear
-density monotonicity is checked on a dense radial grid. The radial truncation
+density monotonicity is checked on a dense radial grid within each branch. The radial truncation
 matches the legacy scanner's 3*R0*A^(1/3); it is not a new nuclear model.
 At very dilute radii the native histogram can be empty. Its probability mass
 is logged and bounded by 1e-5; it is not renormalized into occupied shells.

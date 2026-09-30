@@ -484,16 +484,15 @@ energy/angle settings. Give each run a distinct `--outdir` and `--stem`.
 It converts the scanner output from `nb/GeV/dcostheta_l` to
 `microbarn/sr/GeV` using `1/(2*pi*1000)` and groups component rows into QE,
 MEC, RES, DIS, and total curves. The helper defaults to `--fold auto`.
-The C12 reproduction helper still explicitly selects legacy `exact-theta`.
-Those Rosenbluth results are not certified by the Ar/Ca upgrade below:
-increasing the legacy grid does not correct its Jacobian bias. The scanner's
-new default `auto` density uses the controlled backend and rejects unsupported
-configurations rather than silently falling back to legacy evaluation.
+The C12 helper now defaults to the controlled `auto` QE density. Use
+`--qel-fold-density exact-theta` only to reproduce legacy calculations; their
+Jacobian bias is not fixed by increasing the grid. Historical benchmark
+comparisons should also retain the old non-QE folding settings.
 
-### Controlled G18 QE integration for Ar/Ca
+### Controlled G18 QE integration
 
-For the monotone-density, uncorrelated `LocalFGM` configuration used by
-`G18_10a_02_11a` on Ar40, Ca40 and Ca48, select:
+For the uncorrelated `LocalFGM` configuration used by `G18_10a_02_11a`
+on C12, Ar40, Ca40 and Ca48, select:
 
 ```bash
 --fold auto --qel-fold-density adaptive-theta \
@@ -509,8 +508,8 @@ the invariant two-body measure; this also corrects a normalization problem in
 the legacy fixed-angle Jacobian. Existing `exact-theta` results should not be
 assumed accurate merely because a denser grid looks smoother.
 
-This backend explicitly rejects unsupported nuclear models, nonmonotone/light
-nuclei (A<17), correlated tails, momentum-dependent removal energy and manual
+This backend explicitly rejects unsupported nuclear models, densities with multiple interior extrema,
+correlated tails, momentum-dependent removal energy and manual
 nuclear-state overrides. It does not silently substitute a different physics
 model. The default `--qel-fold-density auto` selects this controlled backend and fails
 clearly for unsupported configurations. Legacy reproduction requires explicitly

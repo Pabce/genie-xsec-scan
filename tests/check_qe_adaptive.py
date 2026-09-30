@@ -15,10 +15,16 @@ automatic,_=run('automatic',['--qel-fold-density','auto'],True)
 for x,y in zip(normal,automatic):assert x['value']==y['value']
 for x,y in zip(normal,tight):assert math.isclose(float(x['value']),float(y['value']),rel_tol=.005,abs_tol=1e-6)
 failed,_=run('budget',['--qel-max-eval','15'],False);assert any('nonconverged' in x['message'] for x in failed)
-run('unsupported',['--target','1000060120'],False)
+saved=base[:]
+base=[x.replace('E=0.15','E=0.24').replace('costheta_l=0','costheta_l=0.5').replace('Eprime:0.12:0.12:1','Eprime:0.19:0.19:1').replace('1000200400','1000060120') for x in base]
+carbon,_=run('carbon',[],True)
+assert any(x['component']=='total' and float(x['value'])>0 for x in carbon)
+carbon_tight,_=run('carbon_tight',['--qel-rel-tol','0.00025'],True)
+for x,y in zip(carbon,carbon_tight):assert math.isclose(float(x['value']),float(y['value']),rel_tol=.002,abs_tol=1e-6)
+base=saved
 run('unsupported_diff',['--diff','W,Q2'],False)
 run('invalid_tolerance',['--qel-rel-tol','nan'],False)
 run('infinite_tolerance',['--qel-abs-tol','inf'],False)
 assert any(x['status']=='nonconverged' for x in failed)
-(a.output/'receipt.json').write_text(json.dumps({'status':'passed','pilot_seconds':elapsed,'checks':['normal_vs_tight','budget_not_success','unsupported_not_success','invalid_tolerance_rejected']},indent=2))
+(a.output/'receipt.json').write_text(json.dumps({'status':'passed','pilot_seconds':elapsed,'checks':['normal_vs_tight','budget_not_success','carbon_normal_vs_tight','unsupported_diff_not_success','invalid_tolerance_rejected']},indent=2))
 print('adaptive runtime tests passed')

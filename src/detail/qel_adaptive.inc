@@ -3,7 +3,7 @@ std::string g_qe_accuracy_message;
 // the sense of piecewise native momentum PDFs plus a scalar radial quadrature.
 // This specialization deliberately rejects models whose binding depends on r.
 struct QELRadialMeasure {
-  std::vector<double> edges, mass;
+  std::vector<double> edges, mass, branches;
   std::vector<std::vector<double>> pdf, suffix;
   double dp = 0, rmax = 0, norm = 0;
   int bins = 0;
@@ -24,9 +24,9 @@ qel_native_radial_measure(const genie::Interaction &base,
                           const QELFoldConfig &cfg) {
   const auto &t = base.InitState().Tgt();
   const auto *lfg = dynamic_cast<const genie::LocalFGM *>(cfg.nucl_model);
-  if (!lfg || t.A() < 17)
+  if (!lfg)
     throw std::runtime_error(
-        "adaptive-theta requires monotone-density LocalFGM A>=17");
+        "adaptive-theta requires LocalFGM");
   const auto &reg = lfg->GetConfig();
   auto flag = [&](const char *k) { return reg.Exists(k) && reg.GetBool(k); };
   if ((reg.Exists("SRC-Fraction") && reg.GetDouble("SRC-Fraction") != 0) ||
@@ -52,21 +52,45 @@ qel_native_radial_measure(const genie::Interaction &base,
   auto kf = [&](double r) {
     return lfg->LocalFermiMomentum(t, t.HitNucPdg(), r);
   };
-  double previous = kf(0);
-  for (int i = 1; i <= 1024; ++i) {
-    double k = kf(m.rmax * i / 1024);
-    if (k > previous + 1e-12)
-      throw std::runtime_error("Nonmonotone radial density unsupported");
-    previous = k;
+  // GENIE's modified harmonic-oscillator densities can have a central dip.
+  // Locate the single interior maximum, then retain both monotone branches.
+  // Keep the original heavy-nucleus path (and its numerical results) unchanged.
+  m.branches = {0};
+  double peak = 0;
+  for (int i = 1; i < 1024; ++i)
+    if (kf(m.rmax * i / 1024) > kf(peak)) peak = m.rmax * i / 1024;
+  if (peak > 0) {
+    double lo = std::max(0., peak - m.rmax / 1024);
+    double hi = std::min(m.rmax, peak + m.rmax / 1024);
+    for (int i = 0; i < 100; ++i) {
+      double a = lo + (hi-lo)/3, b = hi - (hi-lo)/3;
+      if (kf(a) < kf(b)) lo = a; else hi = b;
+    }
+    m.branches.push_back((lo+hi)/2);
   }
-  m.edges = {0, m.rmax};
+  m.branches.push_back(m.rmax);
+  for (size_t b = 1; b < m.branches.size(); ++b) {
+    double lo = m.branches[b-1], hi = m.branches[b];
+    bool rising = kf(hi) > kf(lo);
+    double previous = kf(lo);
+    for (int i = 1; i <= 1024; ++i) {
+      double k = kf(lo + (hi-lo)*i/1024);
+      if ((rising ? previous-k : k-previous) > 1e-12)
+        throw std::runtime_error("Unsupported multi-extremum radial density");
+      previous = k;
+    }
+  }
+  m.edges = m.branches;
   // Native histogram fills at i*pmax/(nbins-1), not at bin centres.
   double step = pmax / (m.bins - 1);
-  for (int i = 1; i < m.bins; ++i) {
-    double k = i * step;
-    if (k > kf(m.rmax) && k < kf(0))
-      m.edges.push_back(
-          qe_numeric::root([&](double r) { return kf(r) - k; }, 0, m.rmax));
+  for (size_t b = 1; b < m.branches.size(); ++b) {
+    double lo = m.branches[b-1], hi = m.branches[b];
+    for (int i = 1; i < m.bins; ++i) {
+      double k = i * step;
+      if (k > std::min(kf(lo),kf(hi)) && k < std::max(kf(lo),kf(hi)))
+        m.edges.push_back(qe_numeric::root(
+            [&](double r) { return kf(r) - k; }, lo, hi));
+    }
   }
   std::sort(m.edges.begin(), m.edges.end());
   m.norm = qel_radial_mass(t.A(), 0, m.rmax);
@@ -169,14 +193,8 @@ double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
   auto recoil_kf = [&](double r) {
     return lfg->LocalFermiMomentum(target, base.RecoilNucleonPdg(), r);
   };
-  auto radial_pdf = [&](int bin, double pf) {
-    double r = 0;
-    if (pf < recoil_kf(0)) {
-      if (pf <= recoil_kf(measure.rmax))
-        return 0.;
-      r = qe_numeric::root([&](double x) { return recoil_kf(x) - pf; }, 0,
-                           measure.rmax);
-    }
+  auto radial_tail = [&](int bin, double r) {
+    if (r >= measure.rmax) return 0.;
     size_t s = std::min(
         measure.pdf.size() - 1,
         size_t(std::upper_bound(measure.edges.begin(), measure.edges.end(), r) -
@@ -185,6 +203,21 @@ double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
            measure.pdf[s][bin] *
                qel_radial_mass(target.A(), r, measure.edges[s + 1]) /
                measure.norm;
+  };
+  auto radial_pdf = [&](int bin, double pf) {
+    double result = 0;
+    for (size_t b = 1; b < measure.branches.size(); ++b) {
+      double lo = measure.branches[b-1], hi = measure.branches[b];
+      double kl = recoil_kf(lo), kh = recoil_kf(hi);
+      if (pf <= std::min(kl,kh)) continue;
+      if (pf < std::max(kl,kh)) {
+        double r = qe_numeric::root(
+            [&](double x) { return recoil_kf(x)-pf; }, lo, hi);
+        if (kl < kh) hi = r; else lo = r;
+      }
+      result += radial_tail(bin,lo)-radial_tail(bin,hi);
+    }
+    return std::max(0., result);
   };
   auto kernel = [&](double p, int bin) {
     double en = energy(p), ef = en + center.omega, c = cosine(p);

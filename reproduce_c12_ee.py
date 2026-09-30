@@ -571,8 +571,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--qel-fold-density",
-        choices=("generator-q2", "exact-theta", "q2-jacobian", "qel-delta"),
-        default="exact-theta",
+        choices=("auto", "adaptive-theta", "native-q2-reference", "generator-q2", "exact-theta", "q2-jacobian", "qel-delta"),
+        default="auto",
         help="Rosenbluth density used inside --qel-bin-fold.",
     )
     parser.add_argument(
