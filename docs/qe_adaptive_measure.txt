@@ -1,0 +1,89 @@
+Adaptive-theta measure and specialization
+=======================================
+Let k,k' be the incoming/outgoing lepton and p the bound struck nucleon.
+The legacy generator samples d sigma/dQ2 times dQ2 dphi*/(2 pi), where phi*
+is the lepton azimuth about the incoming lepton in the hit-nucleon rest frame.
+For a two-body final state, define F=(p+k-k')^2-M_recoil^2 and
+I=sqrt((p.k)^2-p^2*k^2). Lorentz-invariant final-lepton phase space gives
+
+  dQ2 dphi* = 4 I delta(F) d^3 k'/E'.
+
+This follows also by evaluating both sides in the initial-state COM: the
+incoming/outgoing momentum product gives dt/dcos(theta*)=2 pin* pout*,
+and delta(F) fixes the outgoing momentum. At fixed lab E',cos(theta),
+d^3 k'/E'=|k'| dE' dcos(theta) dphi_lab. For an isotropic initial momentum,
+averaging its polar angle about q=k-k' contributes 1/(4 |p| |q|), since
+|dF/dcos(p,q)|=2 |p| |q|. The final lab azimuth cancels the 1/(2 pi).
+Thus the integrand after this reduction is
+
+  (d sigma/dQ2) * I |k'| / (|p| |q|),
+
+averaged over initial azimuth, the normalized momentum magnitude distribution
+and the vertex radius, and multiplied by the number of struck species.
+The numerical code keeps finite lepton masses. GENIE's old primary-lepton
+mapping uses a massless incoming approximation; the independent finite-bin
+check tests compatibility at the actual energies used here.
+
+The previous exact-theta kernel instead used Ef * (E'_hit_rest)^2/(|p||q|).
+That replacement does not implement the invariant transformation for moving,
+bound nucleons. Changing quadrature resolution alone cannot fix that bias.
+The legacy mode remains intact for reproducibility and is not the accuracy
+reference. The old generator-q2 helper additionally omitted the struck-species
+multiplicity despite evaluating XSec with kIAssumeFreeNucleon; that is fixed.
+
+LocalFGM specialization
+----------------------
+For uncorrelated LocalFGM, the native normalized histogram depends on radius
+through which sampled p_i=i*pmax/(nbins-1) satisfy p_i<=kF(r). Its fill positions
+are deliberately not replaced with histogram bin centres. Within each radial
+shell delimited by these crossings the normalized momentum histogram is
+constant. The configured old FermiMover's bound energy depends on momentum,
+not radius, for the supported configurations. At fixed p and energy transfer,
+the final momentum magnitude is fixed as well, so Pauli acceptance is simply
+kF_recoil(r) <= p_final. For monotone density this is r >= r_block.
+For C12 the modified harmonic-oscillator density has a shallow central dip;
+the allowed radial region may contain both a central interval and an outer
+interval. Locate its maximum, partition both monotone branches at every
+native histogram threshold, and sum the accepted intervals.
+
+We therefore cache per-shell momentum PDFs and suffix integrals of their
+r^2 rho(r) weights. Evaluating a momentum bin's radially marginalized density
+uses radial roots, partial-shell scalar integrals, and suffix lookups
+on each monotone branch (one branch for Ar/Ca, two for C12).
+This removes the expensive outer nuclear-radius integration from XSec calls.
+Momentum integration splits at histogram edges, energy-constraint roots and
+radial Pauli-shell crossings. Azimuth integration locates phase-limit crossings
+in a basis with monotonic p.k on [0,pi]. Known support splitting is essential:
+an embedded error estimate alone can miss an unsampled allowed island.
+
+The adapter verifies selected native Prob values in every shell against its
+reconstructed probabilities and refuses incompatible configurations. Nuclear
+density monotonicity is checked on a dense radial grid within each branch. The radial truncation
+matches the legacy scanner's 3*R0*A^(1/3); it is not a new nuclear model.
+At very dilute radii the native histogram can be empty. Its probability mass
+is logged and bounded by 1e-5; it is not renormalized into occupied shells.
+No unsupported model is silently approximated by this specialization.
+
+Error control
+-------------
+Each smooth integral uses embedded G7/K15 with bounded adaptive subdivision.
+The sum of momentum error estimates plus the maximum angular absolute error
+weighted by struck-species count/pi is checked against the requested tolerance.
+Radial integrals use tighter fixed tolerances (relative 1e-10). Estimated errors
+are diagnostics, not rigorous interval bounds: certification also uses tighter
+runs, independent finite-bin integration and full-grid inspections. Native model
+histogram discretization, discarded empty radial-tail mass and model uncertainty
+are separate from the embedded quadrature estimate.
+
+Validation reference
+--------------------
+The native-q2-reference mode samples continuous positions/momenta from the same
+native measure, maps generator Q2/azimuth to the lab with the legacy generator
+helpers, and applies the actual Pauli helper at the sampled radius. It does not
+use the adaptive invariant-Jacobian code or its marginalized Pauli acceptance.
+Independent Cranley-Patterson shifts of Halton coordinates provide replicate
+variation; no single replicate is assigned a statistical precision claim.
+The adaptive density is integrated over identical finite bins with independently
+refined Gaussian quadrature before comparison. This validates the numerical
+measure within the scanner's configured old-generator folding convention; it
+is not a validation of all GENIE event-rate normalization or nuclear physics.

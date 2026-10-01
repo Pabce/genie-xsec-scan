@@ -114,7 +114,13 @@ struct Options {
   double qel_bin_width_energy = 0.005;
   double qel_bin_width_costh = 0.01;
   std::string qel_fold_method = "lattice";
-  std::string qel_fold_density = "exact-theta";
+  std::string qel_fold_density = "auto";
+  std::string fold_normalization = "event";
+  double fold_norm_rel_tol = 0.0002;
+  double qel_rel_tol = 0.001;
+  double qel_abs_tol = 1e-12; // GENIE internal cross-section units
+  long qel_max_eval = 2000000;
+  int qel_reference_seed = 1;
   int qel_fold_samples = 200000;
   int qel_fold_nr = 12;
   int qel_fold_np = 64;
@@ -363,13 +369,17 @@ void print_usage(std::ostream &os)
       << "  --qel-bin-fold opt-in Rosenbluth QE fold for d2 Eprime/omega,costheta_l\n"
       << "  --qel-bin-width Eprime|omega|costheta_l=WIDTH\n"
       << "  --qel-fold-method lattice|grid\n"
-      << "  --qel-fold-density exact-theta (default; advanced alternatives accepted)\n"
+      << "  --qel-fold-density auto (controlled LocalFGM default), adaptive-theta, exact-theta (legacy)\n"
       << "  --qel-fold-samples N for the lattice method\n"
+      << "  --qel-reference-seed N (independent shifted native-q2-reference replicate)\n"
+      << "  --qel-rel-tol R --qel-abs-tol A (GENIE units) --qel-max-eval N\n"
       << "  --qel-fold-nr N --qel-fold-np N --qel-fold-ncosth-p N --qel-fold-nphi-p N\n"
       << "  --qel-fold-ncos0 N --qel-fold-nphi0 N\n"
       << "  --qel-fold-pmax VALUE --qel-fold-kf VALUE --qel-fold-removal-energy VALUE\n"
       << "  --no-qel-fold-scan-cache disable one-pass scan filling for supported QE scans\n"
       << "  --fold auto model-aware event-generator-path folding with phase-space vetoes\n"
+      << "  --fold-normalization event|raw (default event; conditional QE/empirical MEC)\n"
+      << "  --fold-norm-rel-tol R (default 0.0002; cached normalization tolerance)\n"
       << "  --jobs N|auto evaluate scan-point chunks in forked workers (default: 1)\n"
       << "  --batch-config FILE run named scans from an INI-style configuration\n"
       << "  --initial-state-fold RES,MEC,DIS deterministic event-chain initial-state fold\n"
@@ -539,6 +549,18 @@ Options parse_options(int argc, char **argv)
       opt.qel_fold_method = lower(need_value(arg));
     } else if (arg == "--qel-fold-density") {
       opt.qel_fold_density = lower(need_value(arg));
+    } else if (arg == "--qel-reference-seed") {
+      opt.qel_reference_seed = std::stoi(need_value(arg));
+    } else if (arg == "--fold-normalization") {
+      opt.fold_normalization = need_value(arg);
+    } else if (arg == "--fold-norm-rel-tol") {
+      opt.fold_norm_rel_tol = std::stod(need_value(arg));
+    } else if (arg == "--qel-rel-tol") {
+      opt.qel_rel_tol = std::stod(need_value(arg));
+    } else if (arg == "--qel-abs-tol") {
+      opt.qel_abs_tol = std::stod(need_value(arg));
+    } else if (arg == "--qel-max-eval") {
+      opt.qel_max_eval = std::stol(need_value(arg));
     } else if (arg == "--qel-fold-samples") {
       opt.qel_fold_samples = std::stoi(need_value(arg));
     } else if (arg == "--qel-fold-np") {
@@ -734,12 +756,24 @@ Options parse_options(int argc, char **argv)
   if (opt.qel_fold_method != "lattice" && opt.qel_fold_method != "grid") {
     throw std::runtime_error("--qel-fold-method must be lattice or grid");
   }
-  if (opt.qel_fold_density != "generator-q2" &&
+  if (opt.fold_normalization != "event" && opt.fold_normalization != "raw")
+    throw std::runtime_error("--fold-normalization must be event or raw");
+  if (!(opt.fold_norm_rel_tol > 0 && opt.fold_norm_rel_tol < .1))
+    throw std::runtime_error("Invalid --fold-norm-rel-tol");
+  if (!(opt.qel_rel_tol > 0 && opt.qel_rel_tol < 1) ||
+      !(opt.qel_abs_tol > 0) || !std::isfinite(opt.qel_abs_tol) ||
+      opt.qel_max_eval < 15) {
+    throw std::runtime_error("Invalid QE accuracy controls");
+  }
+  if (opt.qel_fold_density != "auto" &&
+      opt.qel_fold_density != "native-q2-reference" &&
+      opt.qel_fold_density != "adaptive-theta" &&
+      opt.qel_fold_density != "generator-q2" &&
       opt.qel_fold_density != "exact-theta" &&
       opt.qel_fold_density != "q2-jacobian" &&
       opt.qel_fold_density != "qel-delta") {
     throw std::runtime_error(
-        "--qel-fold-density must be generator-q2, exact-theta, q2-jacobian, or qel-delta");
+        "--qel-fold-density must be auto, adaptive-theta, native-q2-reference, generator-q2, exact-theta, q2-jacobian, or qel-delta");
   }
   if (opt.qel_fold_samples <= 0) {
     throw std::runtime_error("--qel-fold-samples must be positive");

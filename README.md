@@ -185,6 +185,48 @@ with:
 --shape-norm-ne 120 --shape-norm-ncosth 120
 ```
 
+### Conditional normalization for G18 event folding
+
+`--fold auto` now defaults to `--fold-normalization event` for the supported
+Rosenbluth/uncorrelated LocalFGM QE and EM empirical-MEC paths. At each nuclear
+state it divides the differential shape by that state's shape integral, then
+uses GENIE's channel `Integral()` for the absolute rate. QE additionally accounts
+for the Pauli veto and the generator's retry distribution. This changes both
+the shape and rate relative to the historical raw fold; a single constant
+rescaling of an old curve cannot reproduce it. Tensor models retain their
+existing path; this option does not assert event equivalence for RES or DIS.
+
+For speed, the smooth QE mean density (state integral divided by phase-space
+width) and the MEC state integral are interpolated in validated cached tables.
+The exact native QE width is applied after its phase-space veto, including
+near empty-state thresholds. QE Pauli acceptance is computed once per
+nucleus/channel/energy using eight shifted deterministic integration sequences
+with analytic azimuth averaging. Tables and acceptance are prepared before
+forking scan workers and reused across output points. Progress and convergence
+estimates are logged. `--fold-norm-rel-tol 0.0002` controls the normalization
+estimate (default 0.02%); it is separate from `--qel-rel-tol`. Neither estimate
+is a rigorous error bound. Failure to meet the requested tolerance is an error.
+The MEC cache can refine to 513 nodes near low-energy thresholds (needed at
+120 MeV); it stops early once the same interpolation tolerance is satisfied.
+
+Empirical MEC uses the moving cluster's conditional W,Q2 shape, the generator's
+sampling limits, and its separate QE-derived channel rate. The stationary
+`--shape-norm` correction is bypassed for this path to avoid applying the rate
+twice. The other models' shape-normalization behavior is unchanged.
+
+**Required GENIE repairs:** the empirical-MEC branch must be reachable in
+`KPhaseSpace::Q2Lim`, and `MECGenerator::SelectEmpiricalKinematics` must use a
+valid rejection envelope over its physical low-energy domain. The old coarse
+envelope grid can miss the domain completely or underestimate the maximum.
+For EM `EmpiricalMECPXSec2015`, the repaired generator uses an analytic upper
+bound and fails if a sampled value violates it. Scanner-only changes cannot
+repair previously generated biased MEC events. Record the exact GENIE source
+and library hashes with comparisons; see `PROVENANCE.md`.
+
+`--fold-normalization raw` retains the historical unnormalized folding measure
+for diagnostics. Legacy QE backends require this explicit choice; the event
+mode supports `auto`, `adaptive-theta`, and `native-q2-reference` only.
+
 ### Rosenbluth QE Fold
 
 Rosenbluth QE models expose `dσ/dQ2`, so a requested `d2` curve in
@@ -207,13 +249,18 @@ that behavior opt-in:
   --components \
   --qel-bin-fold \
   --qel-fold-density exact-theta \
+  --fold-normalization raw \
   --qel-fold-nr 80 \
   --qel-fold-np 192 \
   --qel-fold-nphi-p 24 \
   --output out/c12_g18_qel_fold.csv
 ```
 
-`--qel-fold-density exact-theta` is the default. It returns
+**Legacy warning:** for G18 Ar40/Ca40/Ca48 production, use the controlled
+`adaptive-theta` backend documented below. The legacy fixed-angle Jacobian has
+a normalization bias which grid refinement does not fix.
+
+`--qel-fold-density exact-theta --fold-normalization raw` is an explicit legacy option. It returns
 `d2σ/dEprime/dcostheta_l` at the requested lab angle using deterministic
 quadrature over the configured nuclear state. For comparison with inclusive
 electron-scattering figures in `d2σ/dΩdE`, divide by `2*pi`.
@@ -480,8 +527,77 @@ energy/angle settings. Give each run a distinct `--outdir` and `--stem`.
 It converts the scanner output from `nb/GeV/dcostheta_l` to
 `microbarn/sr/GeV` using `1/(2*pi*1000)` and groups component rows into QE,
 MEC, RES, DIS, and total curves. The helper defaults to `--fold auto`.
-When auto mode selects a Rosenbluth QE fold, it uses
-`--qel-fold-density exact-theta` by default: the scanner evaluates the fixed
-lab-angle QE energy-conservation condition deterministically instead of
-histogramming generated events. Increase `--qel-fold-nr`, `--qel-fold-np`, and
-`--qel-fold-nphi-p` for smoother Rosenbluth curves.
+The C12 helper now defaults to the controlled `auto` QE density. Use
+`--qel-fold-density exact-theta --fold-normalization raw` only to reproduce legacy calculations; their
+Jacobian bias is not fixed by increasing the grid. Historical benchmark
+comparisons should also retain the old non-QE folding settings.
+
+### Controlled G18 QE integration
+
+For the uncorrelated `LocalFGM` configuration used by `G18_10a_02_11a`
+on C12, Ar40, Ca40 and Ca48, select:
+
+```bash
+--fold auto --qel-fold-density adaptive-theta \
+--qel-rel-tol 0.001 --qel-abs-tol 1e-12 --qel-max-eval 2000000
+```
+
+`adaptive-theta` is a specialized, controlled alternative to the legacy
+`exact-theta` midpoint calculation. It preserves GENIE's native piecewise
+momentum histogram, caches its radial-shell probabilities, marginalizes the
+radius with the local Pauli cut, splits momentum support boundaries and uses
+embedded Gauss–Kronrod integration for momentum and azimuth. The density uses
+the invariant two-body measure; this also corrects a normalization problem in
+the legacy fixed-angle Jacobian. Existing `exact-theta` results should not be
+assumed accurate merely because a denser grid looks smoother.
+
+This backend explicitly rejects unsupported nuclear models, densities with multiple interior extrema,
+correlated tails, momentum-dependent removal energy and manual
+nuclear-state overrides. It does not silently substitute a different physics
+model. The default `--qel-fold-density auto` selects this controlled backend and fails
+clearly for unsupported configurations. Legacy reproduction requires explicitly
+selecting `exact-theta --fold-normalization raw`; there is no silent fallback to its biased Jacobian. `qel-fold-method`, grid sizes
+and lattice sample counts do not control this backend.
+
+The absolute tolerance is in GENIE's internal cross-section units, before
+conversion to the requested output units. Component CSV messages record the
+estimated quadrature error, evaluation count and requested relative tolerance.
+These estimates do not include model uncertainty or provide a substitute for
+independent convergence checks. A native empty-histogram radial tail is logged;
+this specialization rejects tail probability above 1e-5. Budget exhaustion produces `status=nonconverged`; unsupported configurations
+produce `status=invalid`. Both cause a process failure with
+`--strict`. Progress is logged every 100,000 kernel/phase-space calls. For large
+campaigns, use small scan chunks with atomic, hash-verified receipts so completed
+chunks can be reused after interruption.
+
+`--qel-fold-density native-q2-reference` is a validation-only finite-bin
+estimator. It samples continuous momenta within the native histogram bins and
+uses the old generator's independent Q2-to-lab-lepton mapping. Use
+`--qel-fold-samples N --qel-reference-seed S` for independently shifted Halton
+replicates, and explicitly set both `--qel-bin-width` values. Compare to the
+adaptive density *integrated over the same bin*, not to its centre value.
+Several seeds are necessary to estimate its numerical uncertainty. Its radial
+CDF uses 8192 intervals; it shares the native distribution adapter but not the
+adaptive Jacobian or radial Pauli marginal. The older `generator-q2` modes now
+include the previously missing struck-proton/neutron count.
+
+Tests:
+
+```bash
+c++ -std=c++17 -O2 tests/qe_quadrature_test.cxx -o /tmp/qe_quadrature_test
+/tmp/qe_quadrature_test
+python3 tests/check_qe_adaptive.py --scanner "$PWD/out/xsec_scan" \
+  --output /tmp/qe-adaptive-check-fresh
+```
+
+For resumable production, `scripts/run_qe_campaign.py` accepts a JSON list of
+`E_MeV`, `theta_deg`, and `omega_max_MeV` settings and scans all three Ar/Ca nuclei
+in 25-point chunks. It hashes the executable, settings, GENIE libraries and XML,
+locks its output directory, atomically records completed chunks, and reuses
+only matching receipts. It preserves unreceipted partial files for inspection
+and stops scheduling new work on failure. For example:
+
+```bash
+python3 scripts/run_qe_campaign.py --scanner "$PWD/out/xsec_scan" \
+  --settings kinematics.json --output out/ar-ca-adaptive-v2 --jobs 4
+```

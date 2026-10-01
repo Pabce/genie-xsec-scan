@@ -213,6 +213,8 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
         "--output",
         str(out_csv),
     ]
+    cmd += ["--fold-normalization", args.fold_normalization,
+            "--fold-norm-rel-tol", str(args.fold_norm_rel_tol)]
     if args.fold == "auto":
         cmd += ["--fold", "auto"]
     if args.qel_bin_fold or args.fold == "auto":
@@ -252,9 +254,9 @@ def run_scan(tune: str, panel: dict, outdir: pathlib.Path, args: argparse.Namesp
                 f"{args.qel_fold_removal_energy:.12g}",
             ]
     if args.initial_state_fold.lower() != "off":
+        cmd += ["--initial-state-fold", args.initial_state_fold]
+    if args.fold == "auto" or args.initial_state_fold.lower() != "off":
         cmd += [
-            "--initial-state-fold",
-            args.initial_state_fold,
             "--initial-state-fold-samples",
             str(args.initial_state_fold_samples),
             "--initial-state-fold-nr",
@@ -351,6 +353,8 @@ def write_summary(
                 f"dcostheta={args.qel_bin_width_costh}, "
                 f"method={args.qel_fold_method}, "
                 f"density={args.qel_fold_density}, "
+                f"normalization={args.fold_normalization}, "
+                f"normalization_rel_tol={args.fold_norm_rel_tol}, "
                 f"samples={args.qel_fold_samples}, "
                 f"nr={args.qel_fold_nr}, "
                 f"np={args.qel_fold_np}, "
@@ -570,9 +574,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Deterministic integration method for --qel-bin-fold.",
     )
     parser.add_argument(
+        "--fold-normalization", choices=("event", "raw"), default="event",
+        help="Conditional event normalization; raw is required for legacy QE reproduction.",
+    )
+    parser.add_argument(
+        "--fold-norm-rel-tol", type=float, default=0.0002,
+        help="Relative tolerance of the cached conditional normalization.",
+    )
+    parser.add_argument(
         "--qel-fold-density",
-        choices=("generator-q2", "exact-theta", "q2-jacobian", "qel-delta"),
-        default="exact-theta",
+        choices=("auto", "adaptive-theta", "native-q2-reference", "generator-q2", "exact-theta", "q2-jacobian", "qel-delta"),
+        default="auto",
         help="Rosenbluth density used inside --qel-bin-fold.",
     )
     parser.add_argument(

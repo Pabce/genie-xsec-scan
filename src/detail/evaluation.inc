@@ -72,6 +72,7 @@ double shape_norm_factor(const genie::XSecAlgorithmI &model,
                          const std::map<Var, double> &values,
                          const Options &opt)
 {
+  if (opt.fold_normalization == "event" && initial_state_fold_applies(base_interaction,opt) && is_empirical_mec(base_interaction,model)) return 1.;
   if (!shape_norm_applies_to_component(base_interaction, model, opt) ||
       !has(values, Var::E)) {
     return 1.0;
@@ -295,13 +296,16 @@ ComponentValue evaluate_component(const std::string &name,
       genie::Interaction tmp(interaction);
       out.kin_values = output_map_from_kine(solve_kinematics(values, tmp));
     }
+    g_qe_accuracy_message.clear();
     out.value = evaluate_model(model, interaction, values, opt);
+    if (!g_qe_accuracy_message.empty()) out.message = g_qe_accuracy_message;
     if (!std::isfinite(out.value)) throw std::runtime_error("non-finite result");
   } catch (const std::exception &e) {
     if (opt.strict) throw;
-    out.status = "invalid";
-    out.value = 0.0;
     out.message = e.what();
+    out.status = out.message.rfind("QE nonconverged:", 0) == 0
+                     ? "nonconverged" : "invalid";
+    out.value = 0.0;
   }
   return out;
 }
@@ -454,6 +458,15 @@ void prime_tune_context_caches(const TuneContext &context, double E)
       grid_opt.qel_fold_np = spec.options.initial_state_fold_np;
       const QELFoldConfig cfg = qel_fold_config(interaction);
       (void)cached_initial_state_fold_momenta(interaction, cfg, grid_opt);
+    }
+    if(spec.options.fold_normalization == "event") {
+      genie::Interaction base(interaction);set_probe_p4(base.InitStatePtr(),E);
+      if(spec.options.auto_qel_fold) {
+        auto cfg=qel_fold_config(base);const auto &measure=qel_native_radial_measure(base,cfg);
+        (void)qel_state_normalization(*spec.model,base,cfg,measure,spec.options);
+      }
+      if(spec.options.auto_initial_state_fold && is_empirical_mec(base,*spec.model))
+        (void)mec_state_normalization(*spec.model,base,spec.options);
     }
     if (shape_norm_applies_to_component(interaction, *spec.model,
                                         spec.options)) {
