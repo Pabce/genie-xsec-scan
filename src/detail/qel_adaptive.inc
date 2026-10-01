@@ -138,6 +138,8 @@ qel_native_radial_measure(const genie::Interaction &base,
   return cache.emplace(key.str(), std::move(m)).first->second;
 }
 
+#include "event_normalization.inc"
+
 double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
                                      const genie::Interaction &original,
                                      const std::map<Var, double> &values,
@@ -151,6 +153,8 @@ double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
   set_probe_p4(base.InitStatePtr(), center.E);
   auto cfg = qel_fold_config(base);
   const auto &measure = qel_native_radial_measure(base, cfg);
+  const auto *normalization = opt.fold_normalization == "event" ?
+      &qel_state_normalization(model,base,cfg,measure,opt) : nullptr;
   const auto *lfg = dynamic_cast<const genie::LocalFGM *>(cfg.nucl_model);
   const auto &target = base.InitState().Tgt();
   double mi = particle_mass(base.InitState().ProbePdg()),
@@ -259,6 +263,8 @@ double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
       // *delta((p+q)^2-Mf^2)*d^3k'/E'. Averaging initial cos(p,q)
       // contributes 1/(4*p*|q|); final lab azimuth cancels 1/(2*pi).
       double flux = std::sqrt(std::max(0., pk * pk - hit.M2() * mi * mi));
+      if(normalization) v *= normalization->total / (normalization->acceptance * count *
+          normalization->sigma(p,hit.Pz()/p,lim.max-lim.min));
       return v * flux * pout / (p * qm);
     };
     std::vector<double> edges = {0, kPi};
@@ -355,6 +361,8 @@ double rosenbluth_qel_adaptive_theta(const genie::XSecAlgorithmI &model,
              << "; outer_abs_error_genie=" << outer_error
              << "; max_angular_abs_error_genie=" << inner_error
              << "; calls=" << calls << "; rel_tol=" << opt.qel_rel_tol;
+  if(normalization) diagnostic<<"; normalization=event; norm_rel_error="<<normalization->acceptance_error/normalization->acceptance<<"; norm_table_error="<<normalization->interpolation_error;
+  else diagnostic<<"; normalization=raw";
   g_qe_accuracy_message = diagnostic.str();
   std::cerr << "qe-adaptive-result target=" << target.Pdg()
             << " hit=" << target.HitNucPdg() << " omega=" << center.omega
@@ -375,6 +383,8 @@ double rosenbluth_qel_native_reference(const genie::XSecAlgorithmI &model,
   set_probe_p4(base.InitStatePtr(), center.E);
   auto cfg = qel_fold_config(base);
   const auto &m = qel_native_radial_measure(base, cfg);
+  const auto *normalization = opt.fold_normalization == "event" ?
+      &qel_state_normalization(model,base,cfg,m,opt) : nullptr;
   const auto &t = base.InitState().Tgt();
   const int nr = 8192;
   std::vector<double> rcdf(nr + 1, 0);
@@ -435,6 +445,7 @@ double rosenbluth_qel_native_reference(const genie::XSecAlgorithmI &model,
     double q2 = lim.min + (lim.max - lim.min) * u(i, 4);
     double v = rosenbluth_qel_old_generator_q2_xsec(model, &fixed, cfg, q2,
                                                     2 * kPi * u(i, 5));
+    if(normalization) v *= normalization->total/(normalization->acceptance*qel_hit_nucleon_count(t)*normalization->sigma(p,c,lim.max-lim.min));
     if (v > 0 && qel_lab_lepton_in_bin(fixed, center, opt)) {
       sum += v * (lim.max - lim.min);
       ++hits;

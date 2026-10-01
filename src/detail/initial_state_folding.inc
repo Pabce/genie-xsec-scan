@@ -312,6 +312,10 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
   long outside_phase_space = 0;
 
   if (base_interaction.ProcInfo().IsMEC()) {
+    genie::Interaction selected(base_interaction);
+    set_probe_p4(selected.InitStatePtr(),get(values,Var::E));
+    const auto *normalization = opt.fold_normalization == "event" ?
+        &mec_state_normalization(model,selected,opt) : nullptr;
     const int cluster_pdg = base_interaction.InitState().Tgt().HitNucPdg();
     const auto constituents = mec_cluster_constituents(cluster_pdg);
     genie::Interaction first(base_interaction);
@@ -341,9 +345,25 @@ double initial_state_fold_density(const genie::XSecAlgorithmI &model,
                                 cluster_p3.Mag2())));
       bool sample_below_threshold = false;
       bool sample_outside_phase_space = false;
-      const double density = folded_state_density(
+      double density = folded_state_density(
           model, state, values, diff_vars, opt, &sample_below_threshold,
           &sample_outside_phase_space);
+      // Match SelectEmpiricalKinematics' proposal support as well as its
+      // physical phase space. The lower W edge is not the cluster mass.
+      if(normalization && density>0 &&
+         (state.Kine().W()<1.88 || state.Kine().W()>3. ||
+          state.Kine().Q2()<std::max(.01,fold_em_q2_min(state)) ||
+          state.Kine().Q2()>8.)) {
+        density=0;
+        sample_outside_phase_space=true;
+      }
+      if(normalization && density>0) {
+        double er=state.InitState().ProbeE(genie::kRfHitNucRest);
+        double norm=(er>=normalization->emin && er<=normalization->emax) ?
+            normalization->sigma(er) : mec_state_shape_integral(model,selected,er,64);
+        if(!(norm>0))throw std::runtime_error("Nonzero MEC density has zero state normalization");
+        density *= normalization->total/norm;
+      }
       sum += density;
       below_threshold += sample_below_threshold ? 1 : 0;
       outside_phase_space += sample_outside_phase_space ? 1 : 0;

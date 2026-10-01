@@ -70,6 +70,8 @@ void write_metadata(std::ostream &out, int argc, char **argv,
     out << "# qel_bin_width_costheta_l," << opt.qel_bin_width_costh << "\n";
     out << "# qel_fold_method," << opt.qel_fold_method << "\n";
     out << "# qel_reference_seed," << opt.qel_reference_seed << "\n";
+    out << "# fold_normalization," << opt.fold_normalization << "\n";
+    out << "# fold_norm_rel_tol," << opt.fold_norm_rel_tol << "\n";
     out << "# qel_rel_tol," << opt.qel_rel_tol << "\n";
     out << "# qel_abs_tol_genie," << opt.qel_abs_tol << "\n";
     out << "# qel_max_eval," << opt.qel_max_eval << "\n";

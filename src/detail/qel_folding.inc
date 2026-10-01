@@ -1511,6 +1511,8 @@ double rosenbluth_qel_bin_fold_density(
   if (opt.qel_fold_density == "auto" || opt.qel_fold_density == "adaptive-theta") {
     return rosenbluth_qel_adaptive_theta(model, base_interaction, values, opt);
   }
+  if (opt.fold_normalization == "event")
+    throw std::runtime_error("Event QE normalization requires adaptive-theta, auto, or native-q2-reference; legacy backends require --fold-normalization raw");
   if (opt.qel_fold_density == "exact-theta") {
     return rosenbluth_qel_exact_theta_density(
         model, base_interaction, values, opt);

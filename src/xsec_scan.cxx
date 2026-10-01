@@ -6,6 +6,7 @@
 #include "xsec_scan.hpp"
 
 #include <TLorentzVector.h>
+#include <gsl/gsl_integration.h>
 #include "Physics/NuclearState/LocalFGM.h"
 #include "detail/qe_quadrature.hpp"
 #include <TParticlePDG.h>
